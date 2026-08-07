@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.25
+// @version      1.27
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -920,6 +920,10 @@
         setInterval(updateBoatStatus, 3000);
         // 每 4-6 分钟自动切换生态区域（队长/未组队时）
         startAutoBiomeSwitcher();
+        // 监控官方弹窗的 Dismiss 按钮
+        startDismissWatcher();
+        // 每天定时点击任务按钮
+        startDailyQuestClicker();
     }
 
     // ==================== 自动切换生态区域 ====================
@@ -1086,6 +1090,177 @@
             }
         };
         check();
+    }
+
+    // ==================== 官方弹窗 Dismiss 监控 ====================
+    let dismissHandling = false;
+
+    function startDismissWatcher() {
+        // 每 2 秒检查一次官方弹窗的 Dismiss 按钮（仅登录状态）
+        setInterval(checkDismissButton, 2000);
+    }
+
+    function checkDismissButton() {
+        // 仅在已登录状态下监控
+        if (isLoggedOut() || !isMonitoring) return;
+        // 正在处理中，避免重复
+        if (dismissHandling) return;
+
+        const dismissBtn = findDismissButton();
+        if (!dismissBtn) return;
+
+        // 发现 Dismiss 按钮，开始处理
+        dismissHandling = true;
+        const btnText = (dismissBtn.textContent || '').trim();
+        console.log(`🔔 检测到官方弹窗按钮：${btnText}`);
+
+        // 微信推送消息告知用户
+        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+        if (botKey) {
+            const msg = formatBotMessage(`🔔 官方弹出问题弹窗（${btnText}），已自动处理`);
+            sendWxBot(botKey, msg);
+        }
+
+        // 点击 Dismiss 按钮
+        dismissBtn.click();
+        console.log('👆 已点击 Dismiss 按钮');
+
+        // 每 0.5 秒检查按钮是否消失（成功则重置状态）
+        let attempts = 0;
+        const checkGone = () => {
+            attempts++;
+            // 按钮已消失 = 处理成功
+            if (!findDismissButton()) {
+                console.log('✅ Dismiss 按钮已消失，处理成功');
+                dismissHandling = false;
+                return;
+            }
+            // 未消失则重试点击
+            if (attempts <= 5) {
+                const btn = findDismissButton();
+                if (btn) btn.click();
+                setTimeout(checkGone, 500);
+            } else {
+                console.warn('⚠️ Dismiss 按钮多次点击后仍未消失');
+                dismissHandling = false;
+            }
+        };
+        setTimeout(checkGone, 500);
+    }
+
+    function findDismissButton() {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            // 精确匹配 Dismiss 文本（大小写不敏感）
+            const text = (btn.textContent || '').trim();
+            if (text.toLowerCase() === 'dismiss') {
+                const rect = btn.getBoundingClientRect();
+                const style = getComputedStyle(btn);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return btn;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ==================== 每日任务按钮点击 ====================
+    let dailyQuestTimer = null;
+    let nextQuestTime = null;
+
+    function startDailyQuestClicker() {
+        if (dailyQuestTimer) return;
+        // 立即计算并安排今天（08:05-08:15 随机）的执行时间
+        scheduleDailyQuest();
+        // 每 30 秒检查一次是否为到点（也处理跨天后重新安排）
+        dailyQuestTimer = setInterval(() => {
+            // 到点执行
+            dailyQuestTick();
+            // 已过期且今天未执行过，重新安排（跨天场景）
+            if (nextQuestTime && Date.now() > nextQuestTime.getTime() + 60 * 1000) {
+                scheduleDailyQuest();
+            } else if (nextQuestTime === null) {
+                scheduleDailyQuest();
+            }
+        }, 30000);
+    }
+
+    function scheduleDailyQuest() {
+        // 每天 08:05:00 - 08:14:59 随机一个时间
+        const now = new Date();
+        const target = new Date(now);
+        target.setHours(8, 5 + Math.floor(Math.random() * 10), 0, 0); // 08:05 ~ 08:14 随机分钟
+        // 若目标时间已过今天，则顺延到明天同一时间
+        if (target <= now) {
+            target.setDate(target.getDate() + 1);
+        }
+        nextQuestTime = target;
+        console.log(`[任务] 已安排今日任务点击时间：${target.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+    }
+
+    function dailyQuestTick() {
+        // 到点执行
+        if (!nextQuestTime) return;
+        if (Date.now() < nextQuestTime.getTime()) return;
+
+        // 安排在每周/每天的这个时间执行
+        doQuestClick();
+        // 执行后安排下一天
+        scheduleDailyQuest();
+    }
+
+    function doQuestClick() {
+        // 仅登录状态下执行
+        if (isLoggedOut()) {
+            console.log('[任务] 未登录，跳过任务点击');
+            return;
+        }
+
+        try {
+            // 1. 点击「任务」按钮
+            const questBtn = findButtonByText('任务');
+            if (!questBtn) {
+                console.warn('[任务] 未找到「任务」按钮');
+                return;
+            }
+            questBtn.click();
+            console.log('[任务] 已点击「任务」按钮');
+
+            // 2. 等待出现「任务板」标题
+            waitForElement(
+                'h2', '任务板', 3000,
+                () => {
+                    // 3. 停留 2 秒后点击「钓鱼」按钮切换回来
+                    setTimeout(() => {
+                        const fishBtn = findButtonByText('钓鱼');
+                        if (!fishBtn) {
+                            console.warn('[任务] 未找到「钓鱼」按钮');
+                            return;
+                        }
+                        fishBtn.click();
+                        console.log('[任务] 已点击「钓鱼」按钮');
+
+                        // 4. 等待「钓鱼总属性」确认回到钓鱼页面
+                        waitForElement(
+                            'h3', '钓鱼总属性', 3000,
+                            () => {
+                                console.log('[任务] 已成功回到钓鱼页面');
+                                // 发送微信推送告知用户
+                                const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+                                if (botKey) {
+                                    const msg = formatBotMessage('✅ 已成功点击任务页面并返回钓鱼页面');
+                                    sendWxBot(botKey, msg);
+                                }
+                            },
+                            () => console.warn('[任务] 未检测到返回钓鱼页面')
+                        );
+                    }, 2000);
+                },
+                () => console.warn('[任务] 未出现「任务板」界面')
+            );
+        } catch (e) {
+            console.error('[任务] 执行出错:', e);
+        }
     }
 
     function startCheckFromPlay() {
