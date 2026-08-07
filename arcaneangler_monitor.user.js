@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.28
+// @version      1.33
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -1132,9 +1132,12 @@
             // 按钮已消失 = 处理成功
             if (!findDismissButton()) {
                 console.log('✅ Dismiss 按钮已消失，处理成功');
-                // Dismiss 处理成功后，检测并重启他人的自动钓鱼脚本
-                restartOtherScriptIfNeeded();
-                dismissHandling = false;
+                // Dismiss 处理成功后，等待 2 秒再检测并重启他人的自动钓鱼脚本
+                // （因为弹窗关闭/页面状态更新可能有延迟）
+                setTimeout(() => {
+                    restartOtherScriptIfNeeded();
+                    dismissHandling = false;
+                }, 2000);
                 return;
             }
             // 未消失则重试点击
@@ -1168,53 +1171,113 @@
 
     // ==================== 检测并重启他人自动钓鱼脚本 ====================
     function restartOtherScriptIfNeeded() {
-        // 检测别人的脚本启动/停止按钮
-        const toggleBtn = document.querySelector('button#toggle.toggle[type="button"]');
-        if (!toggleBtn) {
-            console.warn('[重启] 未找到他人脚本的启动/停止按钮');
-            return;
+        // 通过注入 <script> 到页面真实上下文，持续等待并点击他人脚本按钮。
+        // 他人脚本的 #toggle 按钮可能在 Dismiss 弹窗关闭后的延迟才渲染，
+        // 因此这里最长等待约 15 秒，每 500ms 轮询直到找到按钮。
+        try {
+            const script = document.createElement('script');
+            script.textContent = `(function() {
+                // 递归穿透 iframe + shadow DOM 查找 #toggle 启动/停止按钮（已在控制台验证可行）
+                function findToggle(root) {
+                    if (root == null) return null;
+                    var doc = root.document || root;
+                    var nodes;
+                    try { nodes = doc.querySelectorAll('*'); } catch (e) { return null; }
+                    for (var i = 0; i < nodes.length; i++) {
+                        var el = nodes[i];
+                        if (el.tagName === 'BUTTON' && el.id === 'toggle') return el;
+                        if (el.tagName === 'BUTTON') {
+                            var t = (el.textContent || '').trim();
+                            if ((t === '启动' || t === '停止') &&
+                                (el.className === 'toggle' || (el.classList && el.classList.contains('toggle')))) {
+                                return el;
+                            }
+                        }
+                        if (el.shadowRoot) {
+                            var found = findToggle(el.shadowRoot);
+                            if (found) return found;
+                        }
+                        if (el.tagName === 'IFRAME') {
+                            try {
+                                var f = findToggle(el.contentDocument);
+                                if (f) return f;
+                            } catch (e) {}
+                        }
+                    }
+                    return null;
+                }
+
+                console.log('[重启] 注入脚本已加载（iframe+shadow 深度搜索）');
+                var startTime = Date.now();
+                var poll = function() {
+                    var btn = findToggle(document);
+                    if (btn) {
+                        handle(btn);
+                        return;
+                    }
+                    if (Date.now() - startTime < 15000) {
+                        setTimeout(poll, 500);
+                    } else {
+                        console.warn('[重启] 15 秒内未找到按钮');
+                        window.__aaRestartResult = 'notfound';
+                    }
+                };
+
+                function handle(btn) {
+                    if (btn.dataset.enabled === 'true') {
+                        console.log('[重启] 自动钓鱼脚本仍在运行');
+                        window.__aaRestartResult = 'running';
+                        return;
+                    }
+                    console.log('[重启] 检测到脚本已停止，点击启动...');
+                    btn.click();
+                    var attempts = 0;
+                    var check = function() {
+                        var b = findToggle(document);
+                        if (b && b.dataset.enabled === 'true') {
+                            console.log('[重启] 已重新启动成功');
+                            window.__aaRestartResult = 'started';
+                        } else if (attempts < 8) {
+                            attempts++;
+                            var b2 = findToggle(document);
+                            if (b2 && b2.dataset.enabled !== 'true') b2.click();
+                            setTimeout(check, 500);
+                        } else {
+                            console.warn('[重启] 启动失败');
+                            window.__aaRestartResult = 'failed';
+                        }
+                    };
+                    setTimeout(check, 500);
+                }
+
+                poll();
+            })();`;
+            (document.head || document.documentElement).appendChild(script);
+            script.remove();
+        } catch (e) {
+            console.error('[重启] 注入脚本失败:', e);
         }
 
-        const isEnabled = toggleBtn.dataset.enabled === 'true';
-        const btnText = (toggleBtn.textContent || '').trim();
-
-        if (isEnabled) {
-            // 已是停止按钮（脚本运行中），无需操作
-            console.log('[重启] 自动钓鱼脚本仍在运行，无需重启');
-            return;
-        }
-
-        // 界面显示"启动"按钮（脚本已停止），点击启动
-        console.log(`[重启] 检测到自动钓鱼脚本已停止（显示「${btnText}」按钮），正在启动...`);
-        toggleBtn.click();
-
-        // 等待按钮变为「停止」（data-enabled=true），确认启动成功
-        let attempts = 0;
-        const checkStarted = () => {
-            const btn = document.querySelector('button#toggle.toggle[type="button"]');
-            if (!btn) {
-                console.warn('[重启] 启动后未找到按钮');
-                return;
-            }
-            if (btn.dataset.enabled === 'true') {
+        // 沙箱侧轮询读取页面注入脚本的结果，成功后推送微信
+        let pollCount = 0;
+        const pollResult = () => {
+            pollCount++;
+            const res = realWindow.__aaRestartResult;
+            if (res === 'started') {
                 console.log('✅ 自动钓鱼脚本已重新启动成功');
-                // 推送微信消息
                 const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
                 if (botKey) {
                     const msg = formatBotMessage('✅ 自动钓鱼脚本重新启动成功');
                     sendWxBot(botKey, msg);
                 }
-            } else if (attempts < 5) {
-                attempts++;
-                // 未变为停止按钮，重试点击
-                const btn2 = document.querySelector('button#toggle.toggle[type="button"]');
-                if (btn2 && btn2.dataset.enabled !== 'true') btn2.click();
-                setTimeout(checkStarted, 500);
-            } else {
-                console.warn('⚠️ 自动钓鱼脚本启动失败');
+                realWindow.__aaRestartResult = null;
+            } else if ((res === 'notfound' || res === 'running' || res === 'failed') || pollCount > 40) {
+                realWindow.__aaRestartResult = null;
+            } else if (pollCount <= 40) {
+                setTimeout(pollResult, 500);
             }
         };
-        setTimeout(checkStarted, 500);
+        setTimeout(pollResult, 500);
     }
 
     // ==================== 每日任务按钮点击 ====================
