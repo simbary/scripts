@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.24
+// @version      1.25
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -11,6 +11,10 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      qyapi.weixin.qq.com
+// @homepageURL  https://github.com/simbary/scripts
+// @supportURL   https://github.com/simbary/scripts/issues
+// @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_monitor.user.js
+// @updateURL    https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_monitor.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
