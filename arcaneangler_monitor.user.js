@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.27
+// @version      1.28
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -1132,6 +1132,8 @@
             // 按钮已消失 = 处理成功
             if (!findDismissButton()) {
                 console.log('✅ Dismiss 按钮已消失，处理成功');
+                // Dismiss 处理成功后，检测并重启他人的自动钓鱼脚本
+                restartOtherScriptIfNeeded();
                 dismissHandling = false;
                 return;
             }
@@ -1162,6 +1164,57 @@
             }
         }
         return null;
+    }
+
+    // ==================== 检测并重启他人自动钓鱼脚本 ====================
+    function restartOtherScriptIfNeeded() {
+        // 检测别人的脚本启动/停止按钮
+        const toggleBtn = document.querySelector('button#toggle.toggle[type="button"]');
+        if (!toggleBtn) {
+            console.warn('[重启] 未找到他人脚本的启动/停止按钮');
+            return;
+        }
+
+        const isEnabled = toggleBtn.dataset.enabled === 'true';
+        const btnText = (toggleBtn.textContent || '').trim();
+
+        if (isEnabled) {
+            // 已是停止按钮（脚本运行中），无需操作
+            console.log('[重启] 自动钓鱼脚本仍在运行，无需重启');
+            return;
+        }
+
+        // 界面显示"启动"按钮（脚本已停止），点击启动
+        console.log(`[重启] 检测到自动钓鱼脚本已停止（显示「${btnText}」按钮），正在启动...`);
+        toggleBtn.click();
+
+        // 等待按钮变为「停止」（data-enabled=true），确认启动成功
+        let attempts = 0;
+        const checkStarted = () => {
+            const btn = document.querySelector('button#toggle.toggle[type="button"]');
+            if (!btn) {
+                console.warn('[重启] 启动后未找到按钮');
+                return;
+            }
+            if (btn.dataset.enabled === 'true') {
+                console.log('✅ 自动钓鱼脚本已重新启动成功');
+                // 推送微信消息
+                const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+                if (botKey) {
+                    const msg = formatBotMessage('✅ 自动钓鱼脚本重新启动成功');
+                    sendWxBot(botKey, msg);
+                }
+            } else if (attempts < 5) {
+                attempts++;
+                // 未变为停止按钮，重试点击
+                const btn2 = document.querySelector('button#toggle.toggle[type="button"]');
+                if (btn2 && btn2.dataset.enabled !== 'true') btn2.click();
+                setTimeout(checkStarted, 500);
+            } else {
+                console.warn('⚠️ 自动钓鱼脚本启动失败');
+            }
+        };
+        setTimeout(checkStarted, 500);
     }
 
     // ==================== 每日任务按钮点击 ====================
