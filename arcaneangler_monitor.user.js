@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.33
+// @version      1.35
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -1103,54 +1103,29 @@
     function checkDismissButton() {
         // 仅在已登录状态下监控
         if (isLoggedOut() || !isMonitoring) return;
-        // 正在处理中，避免重复
+        // 正在处理中，避免重复（弹窗存续期间只推一次）
         if (dismissHandling) return;
 
         const dismissBtn = findDismissButton();
-        if (!dismissBtn) return;
-
-        // 发现 Dismiss 按钮，开始处理
-        dismissHandling = true;
-        const btnText = (dismissBtn.textContent || '').trim();
-        console.log(`🔔 检测到官方弹窗按钮：${btnText}`);
-
-        // 微信推送消息告知用户
-        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
-        if (botKey) {
-            const msg = formatBotMessage(`🔔 官方弹出问题弹窗（${btnText}），已自动处理`);
-            sendWxBot(botKey, msg);
+        if (!dismissBtn) {
+            // 弹窗当前不存在：重置处理标记，弹窗再次出现时可再次提醒
+            dismissHandling = false;
+            return;
         }
 
-        // 点击 Dismiss 按钮
-        dismissBtn.click();
-        console.log('👆 已点击 Dismiss 按钮');
+        // 发现 Dismiss 按钮（作者弹窗问题），只提醒一次
+        dismissHandling = true;
+        const btnText = (dismissBtn.textContent || '').trim();
+        console.log(`🔔 检测到作者问题弹窗：${btnText}`);
 
-        // 每 0.5 秒检查按钮是否消失（成功则重置状态）
-        let attempts = 0;
-        const checkGone = () => {
-            attempts++;
-            // 按钮已消失 = 处理成功
-            if (!findDismissButton()) {
-                console.log('✅ Dismiss 按钮已消失，处理成功');
-                // Dismiss 处理成功后，等待 2 秒再检测并重启他人的自动钓鱼脚本
-                // （因为弹窗关闭/页面状态更新可能有延迟）
-                setTimeout(() => {
-                    restartOtherScriptIfNeeded();
-                    dismissHandling = false;
-                }, 2000);
-                return;
-            }
-            // 未消失则重试点击
-            if (attempts <= 5) {
-                const btn = findDismissButton();
-                if (btn) btn.click();
-                setTimeout(checkGone, 500);
-            } else {
-                console.warn('⚠️ Dismiss 按钮多次点击后仍未消失');
-                dismissHandling = false;
-            }
-        };
-        setTimeout(checkGone, 500);
+        // 仅推送微信消息告知用户（不点击 dismiss，不重启他人脚本）
+        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+        if (botKey) {
+            const msg = formatBotMessage(`🔔 出现作者问题弹窗（${btnText}），请及时处理`);
+            sendWxBot(botKey, msg);
+        }
+        // 注意：此处不重置 dismissHandling，弹窗存续期间不会重复推送。
+        // 只有 findDismissButton() 检测不到按钮（弹窗消失）后才会重置。
     }
 
     function findDismissButton() {
