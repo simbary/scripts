@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.35
+// @version      1.42
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -29,7 +29,8 @@
         PASSWORD: 'aa_password',
         MONITOR_ENABLED: 'aa_monitor_enabled',
         FLOAT_MINIMIZED: 'aa_float_minimized',
-        LOGOUT_NOTIFIED: 'aa_logout_notified'
+        LOGOUT_NOTIFIED: 'aa_logout_notified',
+        TOKEN_ALERT_RELOAD_AT: 'aa_token_alert_reload_at'
     };
 
     // ==================== 微信机器人 ====================
@@ -920,10 +921,16 @@
         setInterval(updateBoatStatus, 3000);
         // 每 4-6 分钟自动切换生态区域（队长/未组队时）
         startAutoBiomeSwitcher();
-        // 监控官方弹窗的 Dismiss 按钮
-        startDismissWatcher();
         // 每天定时点击任务按钮
         startDailyQuestClicker();
+        // 每天定时领取每日登录奖励（已暂停）
+        // startDailyLoginReward();
+        // 监控 Access token 弹窗
+        startTokenAlertWatcher();
+        // 监控作者问题弹窗
+        startAuthorQuestionWatcher();
+        // 监控自动抛竿会话弹窗
+        startCastSessionPopupWatcher();
     }
 
     // ==================== 自动切换生态区域 ====================
@@ -1092,48 +1099,281 @@
         check();
     }
 
-    // ==================== 官方弹窗 Dismiss 监控 ====================
-    let dismissHandling = false;
-
-    function startDismissWatcher() {
-        // 每 2 秒检查一次官方弹窗的 Dismiss 按钮（仅登录状态）
-        setInterval(checkDismissButton, 2000);
+    // ==================== Access token 弹窗监控 ====================
+    function startTokenAlertWatcher() {
+        // 每 2 秒检查一次 Access token 弹窗（仅登录状态）
+        setInterval(checkTokenAlert, 2000);
     }
 
-    function checkDismissButton() {
-        // 仅在已登录状态下监控
-        if (isLoggedOut() || !isMonitoring) return;
-        // 正在处理中，避免重复（弹窗存续期间只推一次）
-        if (dismissHandling) return;
+    function checkTokenAlert() {
+        // 不论是否已登录状态，都执行检测
+        if (!isMonitoring) return;
 
-        const dismissBtn = findDismissButton();
-        if (!dismissBtn) {
-            // 弹窗当前不存在：重置处理标记，弹窗再次出现时可再次提醒
-            dismissHandling = false;
+        const tokenAlertEl = findTokenAlertElement();
+        if (!tokenAlertEl) return;
+
+        // 使用持久化时间戳防止短时间反复刷新（token 持续失效时避免无限刷新/刷屏）
+        const now = Date.now();
+        const lastReloadAt = GM_getValue(STORAGE_KEY.TOKEN_ALERT_RELOAD_AT, 0);
+        if (now - lastReloadAt < 5 * 60 * 1000) {
             return;
         }
 
-        // 发现 Dismiss 按钮（作者弹窗问题），只提醒一次
-        dismissHandling = true;
-        const btnText = (dismissBtn.textContent || '').trim();
-        console.log(`🔔 检测到作者问题弹窗：${btnText}`);
+        console.log('🔔 检测到 Access token required 弹窗');
 
-        // 仅推送微信消息告知用户（不点击 dismiss，不重启他人脚本）
+        // 推送微信消息告知用户
         const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
         if (botKey) {
-            const msg = formatBotMessage(`🔔 出现作者问题弹窗（${btnText}），请及时处理`);
+            const msg = formatBotMessage('⚠️ 游戏内弹窗提示 Access token required');
             sendWxBot(botKey, msg);
         }
-        // 注意：此处不重置 dismissHandling，弹窗存续期间不会重复推送。
-        // 只有 findDismissButton() 检测不到按钮（弹窗消失）后才会重置。
+
+        // 记录刷新时间并刷新页面
+        GM_setValue(STORAGE_KEY.TOKEN_ALERT_RELOAD_AT, now);
+        location.reload();
     }
 
-    function findDismissButton() {
+    function findTokenAlertElement() {
+        const divs = document.querySelectorAll('div');
+        for (const div of divs) {
+            const text = (div.textContent || '').trim();
+            if (text.includes('Access token required')) {
+                const rect = div.getBoundingClientRect();
+                const style = getComputedStyle(div);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return div;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ==================== 作者问题弹窗监控 ====================
+    let authorQuestionHandling = false;
+    let authorQuestionTimer = null;
+
+    function startAuthorQuestionWatcher() {
+        // 每 2 秒检查一次作者问题弹窗（仅登录状态）
+        setInterval(checkAuthorQuestion, 2000);
+    }
+
+    function checkAuthorQuestion() {
+        // 仅在已登录状态下监控
+        if (isLoggedOut() || !isMonitoring) return;
+        // 正在处理中，避免重复推送
+        if (authorQuestionHandling) return;
+
+        const input = findAnswerInput();
+        const answerBtn = findAnswerButton();
+        const questionEl = findQuestionElement(input);
+
+        // 弹窗判断：输入框或 Answer 按钮至少出现一个
+        if (!input && !answerBtn) {
+            authorQuestionHandling = false;
+            if (authorQuestionTimer) {
+                clearTimeout(authorQuestionTimer);
+                authorQuestionTimer = null;
+            }
+            return;
+        }
+
+        authorQuestionHandling = true;
+
+        const questionText = questionEl ? (questionEl.textContent || '').trim() : '';
+        const questionOk = !!questionEl;
+        const inputOk = !!input;
+        const btnOk = !!answerBtn;
+
+        console.log(`🔔 检测到作者问题弹窗，题目：${questionText || '未识别'}`);
+
+        // 推送微信消息告知用户题目及识别结果
+        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+        if (botKey) {
+            const lines = [
+                '🔔 检测到作者问题弹窗',
+                `题目：${questionText || '未识别'}`,
+                `输入框识别：${inputOk ? '成功' : '失败'}`,
+                `Answer按钮识别：${btnOk ? '成功' : '失败'}`
+            ];
+            sendWxBot(botKey, formatBotMessage(lines.join('\n')));
+        }
+
+        // 三个元素都识别成功，才在题目出现后 2分40秒再次检测并处理
+        if (questionOk && inputOk && btnOk) {
+            if (authorQuestionTimer) clearTimeout(authorQuestionTimer);
+            authorQuestionTimer = setTimeout(() => {
+                if (!isMonitoring) return;
+                handleAuthorQuestionAfterDelay();
+            }, 160 * 1000);
+        }
+    }
+
+    function handleAuthorQuestionAfterDelay() {
+        // 再次检测弹窗是否仍存在
+        const input = findAnswerInput();
+        const answerBtn = findAnswerButton();
+        if (!input && !answerBtn) {
+            console.log('✅ 作者问题弹窗已消失，无需处理');
+            authorQuestionHandling = false;
+            return;
+        }
+        if (!input) {
+            console.log('⚠️ 输入框已消失，无法输入');
+            return;
+        }
+
+        // 输入"抱歉，我看不懂题目"
+        setReactInputValue(input, '抱歉，我看不懂题目');
+        console.log('⌨️ 已输入「抱歉，我看不懂题目」');
+
+        // 等待 Answer 按钮启用后点击
+        const doClick = (attempts) => {
+            if (!isMonitoring) return;
+            const btn = findAnswerButton();
+            if (btn && !btn.disabled) {
+                btn.click();
+                console.log('✅ 已点击 Answer 按钮');
+                const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+                if (botKey) {
+                    const msg = formatBotMessage('已自行输入「看不懂题目」并点击 Answer 按钮');
+                    sendWxBot(botKey, msg);
+                }
+            } else if (btn && btn.disabled && attempts < 10) {
+                console.log('⏳ Answer 按钮尚未启用，等待...');
+                setTimeout(() => doClick(attempts + 1), 500);
+            } else {
+                console.log('⚠️ Answer 按钮不可用或已消失');
+            }
+        };
+        setTimeout(() => doClick(0), 500);
+    }
+
+    function findQuestionElement(input) {
+        if (!input) return null;
+        // 优先：输入框上方最近的非空 div
+        let prev = input.previousElementSibling;
+        while (prev) {
+            if (prev.tagName === 'DIV') {
+                const text = (prev.textContent || '').trim();
+                if (text) return prev;
+            }
+            prev = prev.previousElementSibling;
+        }
+        // 兜底：向上找容器内不含 input/button 的非空 div
+        let container = input.parentElement;
+        while (container) {
+            const divs = container.querySelectorAll('div');
+            for (const div of divs) {
+                const text = (div.textContent || '').trim();
+                if (text && !div.querySelector('input') && !div.querySelector('button')) {
+                    return div;
+                }
+            }
+            container = container.parentElement;
+        }
+        return null;
+    }
+
+    function findAnswerInput() {
+        const inputs = document.querySelectorAll('input[type="text"]');
+        for (const inp of inputs) {
+            const ph = (inp.placeholder || '').toLowerCase();
+            if (ph.includes('answer')) {
+                const rect = inp.getBoundingClientRect();
+                const style = getComputedStyle(inp);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return inp;
+                }
+            }
+        }
+        return null;
+    }
+
+    function findAnswerButton() {
         const buttons = document.querySelectorAll('button');
         for (const btn of buttons) {
-            // 精确匹配 Dismiss 文本（大小写不敏感）
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text.includes('answer')) {
+                const rect = btn.getBoundingClientRect();
+                const style = getComputedStyle(btn);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return btn;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ==================== 自动抛竿会话弹窗处理 ====================
+    const CAST_SESSION_POPUPS = [
+        { contentKeyword: '已有自动抛竿会话在进行中', buttonKeyword: '确认', handling: false },
+        { contentKeyword: '上一个自动抛竿会话已停止', buttonKeyword: '确定', handling: false }
+    ];
+
+    function startCastSessionPopupWatcher() {
+        // 每 2 秒检查一次自动抛竿会话弹窗（仅登录状态）
+        setInterval(checkCastSessionPopup, 2000);
+    }
+
+    function checkCastSessionPopup() {
+        // 不论是否已登录状态，都执行检测
+        if (!isMonitoring) return;
+
+        for (const cfg of CAST_SESSION_POPUPS) {
+            const contentEl = findPopupContent(cfg.contentKeyword);
+            if (contentEl) {
+                // 该弹窗已在处理中，跳过
+                if (cfg.handling) continue;
+                cfg.handling = true;
+                handleCastSessionPopup(cfg, contentEl);
+            } else {
+                // 弹窗不存在：重置处理标记
+                cfg.handling = false;
+            }
+        }
+    }
+
+    function handleCastSessionPopup(cfg, contentEl) {
+        const contentText = (contentEl.textContent || '').trim();
+        console.log(`🔔 检测到自动抛竿会话弹窗：${contentText}`);
+
+        // 点击确认/确定按钮
+        const buttonEl = findPopupButton(cfg.buttonKeyword);
+        if (buttonEl) {
+            buttonEl.click();
+            console.log(`✅ 已点击按钮：${buttonEl.textContent.trim()}`);
+        } else {
+            console.warn(`⚠️ 未找到按钮：${cfg.buttonKeyword}`);
+        }
+
+        // 推送微信消息告知用户弹窗内容及处理结果
+        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+        if (botKey) {
+            const msg = formatBotMessage(`🔔 检测到弹窗\n内容：${contentText}\n✅ 已处理弹窗`);
+            sendWxBot(botKey, msg);
+        }
+    }
+
+    function findPopupContent(keyword) {
+        const divs = document.querySelectorAll('div');
+        for (const div of divs) {
+            const text = (div.textContent || '').trim();
+            if (text.includes(keyword)) {
+                const rect = div.getBoundingClientRect();
+                const style = getComputedStyle(div);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return div;
+                }
+            }
+        }
+        return null;
+    }
+
+    function findPopupButton(keyword) {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
             const text = (btn.textContent || '').trim();
-            if (text.toLowerCase() === 'dismiss') {
+            if (text.includes(keyword)) {
                 const rect = btn.getBoundingClientRect();
                 const style = getComputedStyle(btn);
                 if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
@@ -1352,6 +1592,221 @@
         } catch (e) {
             console.error('[任务] 执行出错:', e);
         }
+    }
+
+    // ==================== 每日登录奖励领取 ====================
+    let dailyRewardTimer = null;
+    let nextDailyRewardTime = null;
+
+    function startDailyLoginReward() {
+        if (dailyRewardTimer) return;
+        // 立即计算并安排今天（08:10-08:15 随机）的执行时间
+        scheduleDailyReward();
+        // 每 30 秒检查一次是否到点（也处理跨天后重新安排）
+        dailyRewardTimer = setInterval(() => {
+            dailyRewardTick();
+            // 已过期且今天未执行，重新安排（跨天场景）
+            if (nextDailyRewardTime && Date.now() > nextDailyRewardTime.getTime() + 60 * 1000) {
+                scheduleDailyReward();
+            } else if (nextDailyRewardTime === null) {
+                scheduleDailyReward();
+            }
+        }, 30000);
+    }
+
+    function scheduleDailyReward() {
+        // 每天 08:10:00 - 08:14:59 随机一个时间
+        const now = new Date();
+        const target = new Date(now);
+        target.setHours(8, 10 + Math.floor(Math.random() * 5), 0, 0); // 08:10 ~ 08:14 随机分钟
+        // 若目标时间已过今天，则顺延到明天同一时间
+        if (target <= now) {
+            target.setDate(target.getDate() + 1);
+        }
+        nextDailyRewardTime = target;
+        console.log(`[奖励] 已安排今日每日奖励领取时间：${target.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+    }
+
+    function dailyRewardTick() {
+        if (!nextDailyRewardTime) return;
+        if (Date.now() < nextDailyRewardTime.getTime()) return;
+        doDailyReward();
+        // 执行后安排下一天
+        scheduleDailyReward();
+    }
+
+    // 查找「每日」入口按钮（按包含「每日」判断，兼容汉化）
+    function findDailyRewardButton() {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            const txt = (btn.textContent || '').trim();
+            if (txt === '每日' || txt.includes('每日')) {
+                const style = getComputedStyle(btn);
+                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                    return btn;
+                }
+            }
+        }
+        return null;
+    }
+
+    function doDailyReward() {
+        // 仅登录状态下执行
+        if (isLoggedOut()) {
+            console.log('[奖励] 未登录，跳过每日奖励领取');
+            return;
+        }
+
+        try {
+            const entryBtn = findDailyRewardButton();
+            if (!entryBtn) {
+                console.log('[奖励] 未找到每日登录奖励入口按钮');
+                return;
+            }
+
+            // 检查入口按钮颜色：绿色(已领取)/黄色(未领取)
+            const entryClass = entryBtn.className || '';
+            const isGreen = entryClass.includes('bg-green') || entryClass.includes('bg-green-600');
+
+            if (isGreen) {
+                console.log('[奖励] 每日奖励已领取（入口为绿色）');
+                // 推送成功消息
+                sendRewardResult(true);
+                return;
+            }
+
+            // 黄色入口 = 未领取，执行领取流程
+            console.log('[奖励] 入口为黄色（未领取），开始领取每日奖励');
+            openAndClaimDailyReward(0);
+        } catch (e) {
+            console.error('[奖励] 执行出错:', e);
+        }
+    }
+
+    // 打开每日奖励面板并领取，retryElapsed 记录重试次数
+    function openAndClaimDailyReward(retryElapsed) {
+        if (!isMonitoring) return;
+        // 点击「每日」入口按钮打开面板
+        const entryBtn = findDailyRewardButton();
+        if (!entryBtn) {
+            console.log('[奖励] 入口按钮消失，无法继续');
+            return;
+        }
+        entryBtn.click();
+        console.log('[奖励] 已点击「每日」入口按钮');
+
+        // 等待出现「每日登录奖励」标题
+        waitForElement(
+            'h2', '每日登录奖励', 3000,
+            () => {
+                // 面板已打开，找「领取第 X 天奖励」按钮
+                const claimBtn = findClaimButton();
+                if (!claimBtn) {
+                    console.warn('[奖励] 未找到领取按钮');
+                    closeRewardPanel();
+                    return;
+                }
+
+                // 点击领取
+                const claimText = (claimBtn.textContent || '').trim();
+                console.log(`[奖励] 点击领取按钮：${claimText}`);
+                claimBtn.click();
+
+                // 检查领取按钮是否消失（成功则消失）
+                let attempts = 0;
+                const checkClaimed = () => {
+                    attempts++;
+                    const btn = findClaimButton();
+                    if (!btn) {
+                        // 领取成功，按钮消失
+                        console.log('[奖励] ✅ 领取按钮已消失，领取成功');
+                        closeRewardPanel(() => {
+                            // 关闭后检查入口是否变绿
+                            setTimeout(() => {
+                                const entry = findDailyRewardButton();
+                                const cls = entry ? (entry.className || '') : '';
+                                if (cls.includes('bg-green') || cls.includes('bg-green-600')) {
+                                    console.log('[奖励] 入口已变绿，确认领取成功');
+                                    sendRewardResult(true);
+                                } else {
+                                    console.log('[奖励] 入口未变绿，可能未完全成功');
+                                    sendRewardResult(false);
+                                }
+                            }, 1000);
+                        });
+                        return;
+                    }
+                    // 领取按钮仍存在，重试（最多 5 次）
+                    if (attempts <= 5) {
+                        console.log(`[奖励] 领取按钮仍存在，重试 ${attempts} 次`);
+                        btn.click();
+                        setTimeout(checkClaimed, 800);
+                    } else {
+                        // 多次重试后仍失败：关闭面板，重走整个流程（最多额外 1 次）
+                        console.log('[奖励] 领取多次失败，关闭面板后重试');
+                        closeRewardPanel(() => {
+                            if (retryElapsed === 0) {
+                                setTimeout(() => openAndClaimDailyReward(1), 1500);
+                            } else {
+                                console.log('[奖励] 二次仍失败，停止本次操作');
+                                sendRewardResult(false);
+                            }
+                        });
+                    }
+                };
+                setTimeout(checkClaimed, 800);
+            },
+            () => {
+                // 面板未出现（等待标题超时）
+                console.warn('[奖励] 未出现「每日登录奖励」面板');
+            }
+        );
+    }
+
+    // 查找「领取第 X 天奖励」按钮（按包含「领取」且含「奖励」判断）
+    function findClaimButton() {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            const txt = (btn.textContent || '').trim();
+            if (txt.includes('领取') && txt.includes('奖励')) {
+                const style = getComputedStyle(btn);
+                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                    return btn;
+                }
+            }
+        }
+        return null;
+    }
+
+    // 关闭每日奖励面板（点击 × 按钮）
+    function closeRewardPanel(onDone) {
+        // 关闭按钮文本为 ×
+        const allButtons = document.querySelectorAll('button');
+        for (const btn of allButtons) {
+            const txt = (btn.textContent || '').trim();
+            if (txt === '×' || txt === 'x' || txt === 'X') {
+                const style = getComputedStyle(btn);
+                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                    btn.click();
+                    console.log('[奖励] 已点击 × 关闭面板');
+                    if (onDone) setTimeout(onDone, 500);
+                    return;
+                }
+            }
+        }
+        console.warn('[奖励] 未找到关闭按钮，跳过关闭');
+        if (onDone) onDone();
+    }
+
+    // 推送领取结果微信消息
+    function sendRewardResult(success) {
+        const botKey = GM_getValue(STORAGE_KEY.BOT_KEY, '');
+        if (!botKey) return;
+        const msg = success
+            ? formatBotMessage('✅ 每日登录奖励已成功领取')
+            : formatBotMessage('⚠️ 每日登录奖励领取失败，请手动处理');
+        sendWxBot(botKey, msg);
+        console.log(`[奖励] 已推送领取${success ? '成功' : '失败'}消息`);
     }
 
     function startCheckFromPlay() {
