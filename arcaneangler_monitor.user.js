@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.45
+// @version      1.46
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -1689,7 +1689,7 @@
             console.log('[奖励] 已点击「每日」入口按钮');
 
             waitForElement(
-                'h2', '每日登录奖励', 3000,
+                'h2', '每日登录奖励', 10000,
                 () => {
                     if (findComeBackTomorrowText()) {
                         console.log('[奖励] 检测到已领取提示，每日奖励已领取');
@@ -1745,9 +1745,11 @@
                     setTimeout(checkClaimed, 800);
                 },
                 () => {
-                    console.warn('[奖励] 未出现「每日登录奖励」面板');
-                    rewardProcessing = false;
-                    onDone && onDone();
+                    console.warn('[奖励] 未出现「每日登录奖励」面板，主动关闭面板');
+                    closeRewardPanel(() => {
+                        rewardProcessing = false;
+                        onDone && onDone();
+                    });
                 }
             );
         } catch (e) {
