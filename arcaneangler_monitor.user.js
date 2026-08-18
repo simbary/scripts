@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.46
+// @version      1.48
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -1606,6 +1606,8 @@
         scheduleDailyReward();
         // 每 30 秒检查：到点主动领取；其余时间检测黄色按钮
         dailyRewardTimer = setInterval(dailyRewardTick, 30000);
+        // 监控自动弹出的每日奖励页面
+        startDailyRewardPopupWatcher();
     }
 
     function scheduleDailyReward() {
@@ -1677,6 +1679,13 @@
         rewardProcessing = true;
 
         try {
+            // 如果每日奖励页面已经自动打开，直接处理领取，不再点击入口按钮
+            if (findRewardPanelTitle()) {
+                console.log('[奖励] 每日奖励页面已打开，直接处理领取');
+                waitForRewardContent(0, onDone);
+                return;
+            }
+
             const entryBtn = findDailyRewardButton();
             if (!entryBtn) {
                 console.log('[奖励] 未找到每日登录奖励入口按钮');
@@ -1691,58 +1700,7 @@
             waitForElement(
                 'h2', '每日登录奖励', 10000,
                 () => {
-                    if (findComeBackTomorrowText()) {
-                        console.log('[奖励] 检测到已领取提示，每日奖励已领取');
-                        closeRewardPanel(() => {
-                            sendRewardMessage('already');
-                            rewardProcessing = false;
-                            onDone && onDone();
-                        });
-                        return;
-                    }
-
-                    const claimBtn = findClaimButton();
-                    if (!claimBtn) {
-                        console.log('[奖励] 未找到领取按钮，每日奖励已领取');
-                        closeRewardPanel(() => {
-                            sendRewardMessage('already');
-                            rewardProcessing = false;
-                            onDone && onDone();
-                        });
-                        return;
-                    }
-
-                    const claimText = (claimBtn.textContent || '').trim();
-                    console.log(`[奖励] 点击领取按钮：${claimText}`);
-                    claimBtn.click();
-
-                    let attempts = 0;
-                    const checkClaimed = () => {
-                        attempts++;
-                        const btn = findClaimButton();
-                        if (!btn) {
-                            console.log('[奖励] ✅ 领取按钮已消失，领取成功');
-                            closeRewardPanel(() => {
-                                sendRewardMessage('claimed');
-                                rewardProcessing = false;
-                                onDone && onDone();
-                            });
-                            return;
-                        }
-                        if (attempts <= 5) {
-                            console.log(`[奖励] 领取按钮仍存在，重试 ${attempts} 次`);
-                            btn.click();
-                            setTimeout(checkClaimed, 800);
-                        } else {
-                            console.log('[奖励] 领取多次失败，停止本次操作');
-                            closeRewardPanel(() => {
-                                sendRewardMessage('failed');
-                                rewardProcessing = false;
-                                onDone && onDone();
-                            });
-                        }
-                    };
-                    setTimeout(checkClaimed, 800);
+                    waitForRewardContent(0, onDone);
                 },
                 () => {
                     console.warn('[奖励] 未出现「每日登录奖励」面板，主动关闭面板');
@@ -1757,6 +1715,106 @@
             rewardProcessing = false;
             onDone && onDone();
         }
+    }
+
+    // 等待每日奖励面板内的领取按钮或已领取提示渲染
+    function waitForRewardContent(attempts, onDone) {
+        // 最多等待 10 秒（20 次 × 500ms）
+        if (attempts > 20) {
+            console.warn('[奖励] 等待领取按钮/已领取提示超时，主动关闭面板');
+            closeRewardPanel(() => {
+                sendRewardMessage('failed');
+                rewardProcessing = false;
+                onDone && onDone();
+            });
+            return;
+        }
+
+        // 已领取提示
+        if (findComeBackTomorrowText()) {
+            console.log('[奖励] 检测到已领取提示，每日奖励已领取');
+            closeRewardPanel(() => {
+                sendRewardMessage('already');
+                rewardProcessing = false;
+                onDone && onDone();
+            });
+            return;
+        }
+
+        // 领取按钮
+        const claimBtn = findClaimButton();
+        if (claimBtn) {
+            const claimText = (claimBtn.textContent || '').trim();
+            console.log(`[奖励] 点击领取按钮：${claimText}`);
+            claimBtn.click();
+
+            let clickAttempts = 0;
+            const checkClaimed = () => {
+                clickAttempts++;
+                const btn = findClaimButton();
+                if (!btn) {
+                    console.log('[奖励] ✅ 领取按钮已消失，领取成功');
+                    closeRewardPanel(() => {
+                        sendRewardMessage('claimed');
+                        rewardProcessing = false;
+                        onDone && onDone();
+                    });
+                    return;
+                }
+                if (clickAttempts <= 5) {
+                    console.log(`[奖励] 领取按钮仍存在，重试 ${clickAttempts} 次`);
+                    btn.click();
+                    setTimeout(checkClaimed, 800);
+                } else {
+                    console.log('[奖励] 领取多次失败，停止本次操作');
+                    closeRewardPanel(() => {
+                        sendRewardMessage('failed');
+                        rewardProcessing = false;
+                        onDone && onDone();
+                    });
+                }
+            };
+            setTimeout(checkClaimed, 800);
+            return;
+        }
+
+        // 两者都未出现，继续等待
+        setTimeout(() => waitForRewardContent(attempts + 1, onDone), 500);
+    }
+
+    // 查找「每日登录奖励」页面标题（用于检测自动弹出的面板）
+    function findRewardPanelTitle() {
+        const h2s = document.querySelectorAll('h2');
+        for (const h2 of h2s) {
+            const text = (h2.textContent || '').trim();
+            if (text.includes('每日登录奖励')) {
+                const rect = h2.getBoundingClientRect();
+                const style = getComputedStyle(h2);
+                if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+                    return h2;
+                }
+            }
+        }
+        return null;
+    }
+
+    // 监控自动弹出的每日奖励页面
+    function startDailyRewardPopupWatcher() {
+        // 每 2 秒检测一次
+        setInterval(checkDailyRewardPopup, 2000);
+    }
+
+    function checkDailyRewardPopup() {
+        // 仅在已登录状态下执行
+        if (isLoggedOut()) return;
+        if (rewardProcessing) return;
+
+        // 检测每日奖励页面标题是否出现（面板已自动打开）
+        if (!findRewardPanelTitle()) return;
+
+        console.log('[奖励] 检测到每日奖励页面自动弹出');
+        rewardProcessing = true;
+        waitForRewardContent(0, null);
     }
 
     // 判断每日奖励是否已领取（出现 "Come back tomorrow" 提示）
