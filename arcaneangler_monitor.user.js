@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArcaneAngler 自动登录监控
 // @namespace    https://github.com/simbary/scripts
-// @version      1.48
+// @version      1.49
 // @description  监控 ArcaneAngler 网页是否登出，自动重新登录，并通过企业微信机器人通知
 // @author       simbary
 // @match        https://arcaneangler.com/*
@@ -866,6 +866,7 @@
     }
 
     function updateBoatStatus() {
+        if (!isMonitoring) return;
         // 读取页面全局变量中的组队数据（由注入脚本填充）
         const data = realWindow.__aaBoatData;
         if (data) {
@@ -1001,6 +1002,10 @@
     }
 
     function doBiomeSwitch(onDone) {
+        if (!isMonitoring) {
+            onDone && onDone();
+            return;
+        }
         // 仅已登录状态下执行
         if (isLoggedOut()) {
             console.log('[生态区域] 未登录，跳过切换');
@@ -1542,6 +1547,7 @@
     }
 
     function doQuestClick() {
+        if (!isMonitoring) return;
         // 仅登录状态下执行
         if (isLoggedOut()) {
             console.log('[任务] 未登录，跳过任务点击');
@@ -1623,6 +1629,7 @@
     }
 
     function dailyRewardTick() {
+        if (!isMonitoring) return;
         // 仅在已登录状态下执行
         if (isLoggedOut()) return;
         if (rewardProcessing) return;
@@ -1805,6 +1812,7 @@
     }
 
     function checkDailyRewardPopup() {
+        if (!isMonitoring) return;
         // 仅在已登录状态下执行
         if (isLoggedOut()) return;
         if (rewardProcessing) return;
