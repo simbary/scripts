@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      3.0.1
+// @version      4.02
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @homepageURL  https://github.com/abangZ/tampermonkey-scripts
@@ -10,7 +10,12 @@
 // @match        https://arcaneangler.com/*
 // @match        https://www.arcaneangler.com/*
 // @match        http://103.217.186.170:3000/*
-// @grant        none
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      qyapi.weixin.qq.com
 // @run-at       document-start
 // ==/UserScript==
 
@@ -70,11 +75,11 @@
 		return baitGrade !== "default" && normalizeQuantity$1(quantity) < normalizeQuantity$1(minimumQuantity);
 	}
 	function getBaitById$1(baitId) {
-		if (typeof window.getBaitById === "function") try {
-			const bait = window.getBaitById(baitId);
+		if (typeof unsafeWindow.getBaitById === "function") try {
+			const bait = unsafeWindow.getBaitById(baitId);
 			if (bait) return bait;
 		} catch {}
-		return Array.isArray(window.BAITS) ? window.BAITS.find((bait) => bait?.id === baitId) : null;
+		return Array.isArray(unsafeWindow.BAITS) ? unsafeWindow.BAITS.find((bait) => bait?.id === baitId) : null;
 	}
 	function getBaitLabel(baitId, baitGrade, biomeId) {
 		const catalogName = String(getBaitById$1(baitId)?.name ?? "").trim();
@@ -138,7 +143,7 @@
 				});
 				return false;
 			}
-			const api = window.ApiService;
+			const api = unsafeWindow.ApiService;
 			if (typeof api?.equipBait !== "function") {
 				updateSnapshot({ nextStatus: "等待游戏鱼饵接口" });
 				return false;
@@ -579,7 +584,7 @@
 		};
 	}
 	function getBiomeName(biomeId) {
-		return String(window.BIOMES?.[biomeId]?.name ?? "").trim() || `地图 ${biomeId}`;
+		return String(unsafeWindow.BIOMES?.[biomeId]?.name ?? "").trim() || `地图 ${biomeId}`;
 	}
 	function getWeatherLabel(weather) {
 		return WEATHER_LABELS[weather] ?? weather ?? "未知天气";
@@ -608,7 +613,7 @@
 		};
 	}
 	async function autoEquipForBiome(player, target, { skipBait = false, skipRod = false } = {}) {
-		const api = window.ApiService;
+		const api = unsafeWindow.ApiService;
 		if (!skipBait && target.baitId && target.baitId !== player.equippedBait) try {
 			await api.equipBait(target.baitId);
 		} catch (error) {
@@ -633,10 +638,7 @@
 		}
 	}
 	function getNextHourlyRefreshDelay(now = new Date()) {
-		const nextRefresh = new Date(now);
-		nextRefresh.setMinutes(0, 30, 0);
-		if (nextRefresh.getTime() <= now.getTime()) nextRefresh.setHours(nextRefresh.getHours() + 1);
-		return Math.max(1e3, nextRefresh.getTime() - now.getTime());
+		return (60 + Math.random() * 60) * 1e3;
 	}
 	function createAutoBiomeController({ getPlayer, getState, onBiomeReady, onStateChange }) {
 		let evaluationId = 0;
@@ -801,23 +803,30 @@
 			}
 		}
 		async function loadAllWeather() {
-			if (typeof window.ApiService?.getAllBiomeWeather === "function") return window.ApiService.getAllBiomeWeather();
+			if (typeof unsafeWindow.ApiService?.getAllBiomeWeather === "function") return unsafeWindow.ApiService.getAllBiomeWeather();
 			const response = await window.fetch("/api/game/weather");
 			if (!response.ok) throw new Error(`天气接口返回 ${response.status}`);
 			return response.json();
 		}
 		async function loadDailyQuests() {
-			if (typeof window.ApiService?.getQuests === "function") return window.ApiService.getQuests();
+			if (typeof unsafeWindow.ApiService?.getQuests === "function") return unsafeWindow.ApiService.getQuests();
 			const response = await window.fetch("/api/quests");
 			if (!response.ok) throw new Error(`每日任务接口返回 ${response.status}`);
 			return response.json();
 		}
+		async function loadGuildBoosters() {
+			if (typeof unsafeWindow.ApiService?.getActiveGuildBoosters === "function") return unsafeWindow.ApiService.getActiveGuildBoosters();
+			const response = await window.fetch("/api/guild/boosters/active");
+			if (!response.ok) throw new Error(`公会加成接口返回 ${response.status}`);
+			return response.json();
+		}
+
 		async function loadMasterySnapshot() {
 			if (masteryLoadStarted) return;
 			masteryLoadStarted = true;
 			try {
 				let payload = {};
-				if (typeof window.ApiService?.request === "function") payload = await window.ApiService.request("/mastery");
+				if (typeof unsafeWindow.ApiService?.request === "function") payload = await unsafeWindow.ApiService.request("/mastery");
 				else if (typeof window.fetch === "function") {
 					const response = await window.fetch("/api/mastery");
 					if (!response.ok) throw new Error(`地图精通接口返回 ${response.status}`);
@@ -860,6 +869,16 @@
 				if (Object.keys(weatherByBiome).length === 0) setStatus("天气数据读取失败");
 			}
 		}
+		async function refreshGuildBoosters() {
+			try {
+				const payload = await loadGuildBoosters();
+				guildBoosterResponse = payload;
+				updateGuildBoosters();
+			} catch (error) {
+				console.warn("[自动换图] 无法读取公会经验加成：", error);
+			}
+		}
+
 		async function refreshDailyQuests() {
 			if (dailyQuestState.loading) return;
 			dailyQuestState = {
@@ -895,7 +914,10 @@
 			fallbackTimer = window.setTimeout(async () => {
 				const refreshes = [];
 				const { autoBiomeSettings = {}, enabled = false } = getState?.() ?? {};
-				if (enabled === true && autoBiomeSettings.enabled === true) refreshes.push(refreshWeather());
+				if (enabled === true && autoBiomeSettings.enabled === true) {
+					refreshes.push(refreshWeather());
+					refreshes.push(refreshGuildBoosters());
+				}
 				const { dailyQuestEnabled } = getPriorityState(autoBiomeSettings.priorityOrder);
 				if (autoBiomeSettings.enabled === true && dailyQuestEnabled && Date.now() - dailyQuestState.updatedAt > DAILY_QUEST_FALLBACK_FRESHNESS) refreshes.push(refreshDailyQuests());
 				await Promise.all(refreshes);
@@ -970,7 +992,7 @@
 				await notifyBiomeReady(normalizeBiomeId$1(player.currentBiome));
 				return;
 			}
-			const api = window.ApiService;
+			const api = unsafeWindow.ApiService;
 			const changeBiome = isBoatLeader ? api?.changeBoatBiome : api?.changeBiome;
 			if (typeof changeBiome !== "function") {
 				setStatus(isBoatLeader ? "等待游戏组队切图接口" : "等待游戏切图接口");
@@ -1087,6 +1109,12 @@
 	var IDLE_RELOAD_SETTINGS_STORAGE_KEY = "arcane-angler-idle-reload-settings-v1";
 	var PANEL_COLLAPSED_STORAGE_KEY = "arcane-angler-panel-collapsed-v1";
 	var EARNINGS_STORAGE_KEY = "arcane-angler-earnings-v1";
+	var LOGIN_MONITOR_ENABLED_STORAGE_KEY = "arcane-angler-login-monitor-enabled-v1";
+	var LOGIN_MONITOR_MACHINE_NAME_STORAGE_KEY = "arcane-angler-login-monitor-machine-name-v1";
+	var LOGIN_MONITOR_BOT_KEY_STORAGE_KEY = "arcane-angler-login-monitor-bot-key-v1";
+	var LOGIN_MONITOR_USERNAME_STORAGE_KEY = "arcane-angler-login-monitor-username-v1";
+	var LOGIN_MONITOR_PASSWORD_STORAGE_KEY = "arcane-angler-login-monitor-password-v1";
+	var LOGIN_MONITOR_LOGOUT_NOTIFIED_STORAGE_KEY = "arcane-angler-login-monitor-logout-notified-v1";
 	var PANEL_ID = "arcane-angler-cast-panel-host";
 	var STAFF_QUESTION_TEXT = "Staff Question";
 	var HUMAN_VERIFICATION_MESSAGE = "Arcane Angler 出现需要处理的验证，自动抛竿已停止";
@@ -1164,7 +1192,7 @@
 	function getPlayerBossStats(player) {
 		let totalStats = null;
 		try {
-			totalStats = window.GameHelpers?.getTotalStats?.(player, null) ?? null;
+			totalStats = unsafeWindow.GameHelpers?.getTotalStats?.(player, null) ?? null;
 		} catch (error) {
 			console.warn("[自动打 Boss] 无法计算装备后的角色属性：", error);
 		}
@@ -1245,7 +1273,7 @@
 				setStatus("脚本启动后自动攻击");
 				return;
 			}
-			const api = window.ApiService;
+			const api = unsafeWindow.ApiService;
 			if (typeof api?.getCurrentAnomaly !== "function" || typeof api?.attackAnomaly !== "function") {
 				setStatus("等待游戏 Boss 接口");
 				schedule(CONFIG.autoBossPollInterval);
@@ -1703,7 +1731,7 @@
 			throw new Error("验证码 challenge 数据不完整");
 		}
 		async function runCaptchaBypass(challenge, isAttemptActive) {
-			const api = window.ApiService;
+			const api = unsafeWindow.ApiService;
 			if (typeof api?.notifyCaptchaVerified !== "function") throw new Error("页面验证码 API 不可用");
 			if (!isAttemptActive()) return false;
 			if (!challenge?.token) throw new Error("验证码 challenge 数据不完整");
@@ -1733,7 +1761,7 @@
 			return true;
 		}
 		async function runStaffQuestionBypass(question, isAttemptActive) {
-			const api = window.ApiService;
+			const api = unsafeWindow.ApiService;
 			if (typeof api?.answerToastQuestion !== "function") throw new Error("页面 Staff Question API 不可用");
 			const solveQuestion = (targetQuestion) => solveStaffQuestion(targetQuestion?.question, { currentBiome: getCurrentBiome?.() });
 			let answer = solveQuestion(question);
@@ -2201,7 +2229,7 @@
 		return String(value ?? "").trim() || fallback;
 	}
 	function getBaitCatalog() {
-		const baits = Array.isArray(window.BAITS) ? window.BAITS : [];
+		const baits = Array.isArray(unsafeWindow.BAITS) ? unsafeWindow.BAITS : [];
 		if (baits !== cachedBaits) {
 			cachedBaits = baits;
 			cachedBaitCatalog = new Map(baits.filter((bait) => bait?.id).map((bait) => [String(bait.id), bait]));
@@ -2209,8 +2237,8 @@
 		return cachedBaitCatalog;
 	}
 	function getBaitById(baitId) {
-		if (typeof window.getBaitById === "function") try {
-			const bait = window.getBaitById(baitId);
+		if (typeof unsafeWindow.getBaitById === "function") try {
+			const bait = unsafeWindow.getBaitById(baitId);
 			if (bait) return bait;
 		} catch (error) {
 			console.warn("[收益统计] 无法从页面查询鱼饵信息：", error);
@@ -2224,7 +2252,7 @@
 	function getCastEarningsContext(result) {
 		const biomeId = normalizeId(result.currentBiome, "unknown");
 		const baitId = normalizeId(result.equippedBait, "unknown");
-		const biome = window.BIOMES?.[biomeId] ?? null;
+		const biome = unsafeWindow.BIOMES?.[biomeId] ?? null;
 		const bait = getBaitById(baitId);
 		return {
 			biomeId,
@@ -2574,9 +2602,9 @@
 		}
 	}
 	function installEventSourceInterceptor({ onWeatherUpdate } = {}) {
-		const OriginalEventSource = window.EventSource;
+		const OriginalEventSource = unsafeWindow.EventSource;
 		if (typeof OriginalEventSource !== "function") return false;
-		window.EventSource = new Proxy(OriginalEventSource, { construct(Target, args) {
+		unsafeWindow.EventSource = new Proxy(OriginalEventSource, { construct(Target, args) {
 			const source = Reflect.construct(Target, args);
 			if (isWeatherStreamUrl(args[0]) && typeof source.addEventListener === "function") source.addEventListener("message", (event) => {
 				try {
@@ -2591,8 +2619,8 @@
 		return true;
 	}
 	function installFetchInterceptor({ onCaptchaChallenge, onCaptchaVerified, onCastResult, onCompetitionResponse, onGameStateResponse, onGuildBoosterResponse, onQuestResponse, onStaffQuestion, onStaffQuestionResolved, onWeatherResponse }) {
-		const originalFetch = window.fetch;
-		window.fetch = async function(input, init) {
+		const originalFetch = unsafeWindow.fetch;
+		unsafeWindow.fetch = async function(input, init) {
 			const request = input instanceof Request ? input : null;
 			const method = String(init?.method ?? request?.method ?? "GET").toUpperCase();
 			let url = null;
@@ -3333,9 +3361,1026 @@
 		}
 	}
 	var userscriptFileName = "arcane-angler-cast.user.js";
-	var userscriptVersion = "3.0.1";
 	`${userscriptFileName}`;
-	var panel_default = "* {\n    box-sizing: border-box;\n}\n\n.panel {\n    width: 280px;\n    max-width: calc(100vw - 32px);\n    padding: 14px;\n    border: 1px solid rgba(255, 255, 255, 0.18);\n    border-radius: 12px;\n    background: rgba(18, 18, 24, 0.94);\n    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.42);\n    color: #ffffff;\n    backdrop-filter: blur(12px);\n}\n\n.panel[data-collapsed='true'] {\n    width: auto;\n    padding: 7px;\n}\n\n.panel[data-collapsed='true'] .panel-content,\n.panel[data-collapsed='true'] .title-text {\n    display: none;\n}\n\n.header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n}\n\n.title {\n    display: flex;\n    align-items: center;\n    gap: 5px;\n    font-size: 15px;\n    font-weight: 700;\n}\n\n.collapse-toggle {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    width: 26px;\n    height: 26px;\n    flex-shrink: 0;\n    padding: 0;\n    border: 1px solid rgba(255, 255, 255, 0.16);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.08);\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 16px;\n    line-height: 1;\n    cursor: pointer;\n}\n\n.collapse-toggle:hover {\n    background: rgba(255, 255, 255, 0.14);\n}\n\n.panel-content {\n    max-height: calc(100vh - 96px);\n    overflow-x: hidden;\n    overflow-y: auto;\n    overscroll-behavior: contain;\n    margin-top: 10px;\n    padding-right: 2px;\n    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;\n    scrollbar-width: thin;\n}\n\n.panel-content::-webkit-scrollbar {\n    width: 6px;\n    height: 0;\n}\n\n.panel-content::-webkit-scrollbar-track {\n    background: transparent;\n}\n\n.panel-content::-webkit-scrollbar-thumb {\n    border-radius: 999px;\n    background: rgba(255, 255, 255, 0.24);\n}\n\n.panel-content::-webkit-scrollbar-thumb:hover {\n    background: rgba(255, 255, 255, 0.38);\n}\n\n.panel-content::-webkit-scrollbar-corner {\n    background: transparent;\n}\n\n.tabs {\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n    gap: 4px;\n    margin-bottom: 10px;\n    padding: 3px;\n    border-radius: 8px;\n    background: rgba(255, 255, 255, 0.07);\n}\n\n.panel-tab {\n    padding: 6px 8px;\n    border: 0;\n    border-radius: 6px;\n    background: transparent;\n    color: rgba(255, 255, 255, 0.56);\n    font-size: 12px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.panel-tab[data-active='true'] {\n    background: #6d5dfc;\n    color: #ffffff;\n}\n\n.panel-view[hidden] {\n    display: none;\n}\n\n.row {\n    display: flex;\n    justify-content: space-between;\n    gap: 10px;\n    margin-top: 7px;\n    font-size: 12px;\n    line-height: 1.4;\n}\n\n.label {\n    flex-shrink: 0;\n    color: rgba(255, 255, 255, 0.58);\n}\n\n.value {\n    min-width: 0;\n    overflow-wrap: anywhere;\n    text-align: right;\n    color: rgba(255, 255, 255, 0.92);\n}\n\n.field {\n    display: block;\n    margin-top: 12px;\n}\n\n.field-label {\n    display: block;\n    margin-bottom: 5px;\n    color: rgba(255, 255, 255, 0.58);\n    font-size: 12px;\n}\n\n.input {\n    width: 100%;\n    padding: 8px 9px;\n    border: 1px solid rgba(255, 255, 255, 0.18);\n    border-radius: 7px;\n    outline: none;\n    background: #252530;\n    color: rgba(255, 255, 255, 0.92);\n    color-scheme: dark;\n    font-size: 12px;\n}\n\n.input option {\n    background: #252530;\n    color: rgba(255, 255, 255, 0.92);\n}\n\n.input:focus {\n    border-color: #6d5dfc;\n}\n\n.input::placeholder {\n    color: rgba(255, 255, 255, 0.32);\n}\n\n.field-help {\n    margin-top: 6px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 11px;\n    line-height: 1.45;\n}\n\n.field-help[hidden] {\n    display: none;\n}\n\n.field-help a {\n    color: #9ea5ff;\n    text-decoration: underline;\n}\n\n.settings-section + .settings-section {\n    margin-top: 14px;\n    padding-top: 14px;\n    border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.settings-title {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 8px;\n    list-style: none;\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 12px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.settings-title::-webkit-details-marker {\n    display: none;\n}\n\n.settings-title::after {\n    content: '›';\n    color: rgba(255, 255, 255, 0.45);\n    font-size: 18px;\n    line-height: 1;\n    transform: rotate(0deg);\n    transition: transform 160ms ease;\n}\n\n.settings-section[open] > .settings-title::after {\n    transform: rotate(90deg);\n}\n\n.verification-history {\n    display: grid;\n    gap: 6px;\n    margin-top: 10px;\n}\n\n.verification-history-item {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n    min-height: 32px;\n    padding: 6px 8px;\n    border: 1px solid rgba(255, 255, 255, 0.1);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.04);\n}\n\n.verification-history-time,\n.verification-history-empty {\n    color: rgba(255, 255, 255, 0.62);\n    font-size: 11px;\n}\n\n.verification-history-empty {\n    padding: 8px 0;\n    text-align: center;\n}\n\n.verification-history-status {\n    flex: 0 0 auto;\n    font-size: 11px;\n    font-weight: 700;\n}\n\n.verification-history-status[data-success='true'] {\n    color: #6ee7a2;\n}\n\n.verification-history-status[data-success='false'] {\n    color: #ff9a9a;\n}\n\n.priority-heading {\n    margin-top: 12px;\n}\n\n.priority-list {\n    display: grid;\n    gap: 5px;\n}\n\n.priority-item {\n    display: grid;\n    grid-template-columns: auto minmax(0, 1fr) auto auto;\n    align-items: center;\n    gap: 6px;\n    min-height: 34px;\n    padding: 5px 6px;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.045);\n    color: rgba(255, 255, 255, 0.86);\n    font-size: 11px;\n    cursor: grab;\n}\n\n.priority-item[data-dragging='true'] {\n    border-color: rgba(109, 93, 252, 0.72);\n    background: rgba(109, 93, 252, 0.18);\n    opacity: 0.72;\n    cursor: grabbing;\n}\n\n.priority-item[data-enabled='false'] {\n    color: rgba(255, 255, 255, 0.44);\n    opacity: 0.72;\n}\n\n.priority-item[data-enabled='boundary'] {\n    border-color: rgba(251, 191, 36, 0.42);\n    background: rgba(251, 191, 36, 0.08);\n}\n\n.priority-drag-handle {\n    color: rgba(255, 255, 255, 0.38);\n    font-size: 15px;\n    line-height: 1;\n}\n\n.priority-label {\n    overflow: hidden;\n    font-weight: 700;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.priority-state {\n    padding: 2px 5px;\n    border-radius: 999px;\n    background: rgba(74, 222, 128, 0.12);\n    color: #86efac;\n    font-size: 9px;\n    white-space: nowrap;\n}\n\n.priority-item[data-enabled='false'] .priority-state {\n    background: rgba(255, 255, 255, 0.08);\n    color: rgba(255, 255, 255, 0.48);\n}\n\n.priority-item[data-enabled='boundary'] .priority-state {\n    background: rgba(251, 191, 36, 0.12);\n    color: #fcd34d;\n}\n\n.priority-actions {\n    display: inline-flex;\n    gap: 3px;\n}\n\n.priority-move {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    width: 22px;\n    height: 22px;\n    padding: 0;\n    border: 1px solid rgba(255, 255, 255, 0.14);\n    border-radius: 5px;\n    background: rgba(255, 255, 255, 0.06);\n    color: rgba(255, 255, 255, 0.72);\n    font-size: 11px;\n    cursor: pointer;\n}\n\n.priority-move:hover:not(:disabled) {\n    background: rgba(109, 93, 252, 0.22);\n}\n\n.priority-move:disabled {\n    cursor: default;\n    opacity: 0.28;\n}\n\n.choice-list {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 6px;\n    margin-top: 8px;\n}\n\n.choice-list-three {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n}\n\n.choice-option {\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    padding: 7px 8px;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 7px;\n    color: rgba(255, 255, 255, 0.78);\n    font-size: 11px;\n    cursor: pointer;\n}\n\n.choice-option:has(input:checked) {\n    border-color: rgba(109, 93, 252, 0.72);\n    background: rgba(109, 93, 252, 0.14);\n    color: #ffffff;\n}\n\n.choice-option input {\n    margin: 0;\n    accent-color: #6d5dfc;\n}\n\n.settings-group[hidden] {\n    display: none;\n}\n\n.number-grid {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 8px;\n}\n\n.secondary-button {\n    width: 100%;\n    margin-top: 9px;\n    padding: 7px 10px;\n    border: 1px solid rgba(109, 93, 252, 0.55);\n    border-radius: 7px;\n    background: rgba(109, 93, 252, 0.12);\n    color: #b9b5ff;\n    font-size: 11px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.secondary-button:hover {\n    background: rgba(109, 93, 252, 0.22);\n}\n\n.secondary-button:disabled {\n    cursor: default;\n    opacity: 0.48;\n}\n\n.toggle {\n    width: 100%;\n    margin-top: 12px;\n    padding: 9px 12px;\n    border: 0;\n    border-radius: 8px;\n    background: #6d5dfc;\n    color: #ffffff;\n    font-size: 13px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.toggle:hover {\n    filter: brightness(1.08);\n}\n\n.toggle[data-enabled='true'] {\n    background: #d34848;\n}\n\n.option-row {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n    margin-top: 10px;\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 12px;\n    cursor: pointer;\n}\n\n.switch {\n    position: relative;\n    width: 38px;\n    height: 22px;\n    flex-shrink: 0;\n}\n\n.switch input {\n    position: absolute;\n    width: 1px;\n    height: 1px;\n    opacity: 0;\n}\n\n.switch-track {\n    display: block;\n    width: 100%;\n    height: 100%;\n    border-radius: 999px;\n    background: rgba(255, 255, 255, 0.2);\n    transition: background 0.15s ease;\n}\n\n.switch-track::after {\n    position: absolute;\n    top: 3px;\n    left: 3px;\n    width: 16px;\n    height: 16px;\n    border-radius: 50%;\n    background: #ffffff;\n    content: '';\n    transition: transform 0.15s ease;\n}\n\n.switch input:checked + .switch-track {\n    background: #6d5dfc;\n}\n\n.switch input:checked + .switch-track::after {\n    transform: translateX(16px);\n}\n\n.switch input:focus-visible + .switch-track {\n    outline: 2px solid #9ea5ff;\n    outline-offset: 2px;\n}\n\n.hint {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    gap: 8px;\n    margin-top: 9px;\n    color: rgba(255, 255, 255, 0.42);\n    font-size: 11px;\n}\n\n.hint-version {\n    color: rgba(255, 255, 255, 0.58);\n}\n\n.stats-filters {\n    display: grid;\n    gap: 6px;\n    margin-bottom: 8px;\n}\n\n.stats-filter span {\n    display: block;\n    margin-bottom: 3px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 10px;\n}\n\n.stats-select {\n    width: 100%;\n    padding: 6px 7px;\n    border: 1px solid rgba(255, 255, 255, 0.14);\n    border-radius: 6px;\n    outline: none;\n    background: #252530;\n    color: rgba(255, 255, 255, 0.9);\n    font-size: 10px;\n}\n\n.stats-select:focus {\n    border-color: #6d5dfc;\n}\n\n.stats-scope {\n    overflow: hidden;\n    color: rgba(255, 255, 255, 0.72);\n    font-size: 10px;\n    font-weight: 700;\n    text-align: center;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stats-start {\n    margin: 3px 0 9px;\n    color: rgba(255, 255, 255, 0.48);\n    font-size: 10px;\n    text-align: center;\n}\n\n.stats-grid {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 6px;\n}\n\n.stat-card {\n    min-width: 0;\n    padding: 8px;\n    border: 1px solid rgba(255, 255, 255, 0.1);\n    border-radius: 8px;\n    background: rgba(255, 255, 255, 0.055);\n}\n\n.stat-card-label {\n    display: block;\n    margin-bottom: 3px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 10px;\n}\n\n.stat-card-value {\n    display: block;\n    overflow: hidden;\n    color: rgba(255, 255, 255, 0.94);\n    font-size: 13px;\n    line-height: 1.25;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stat-card-value[data-tone='income'],\n.stat-card-value[data-tone='positive'] {\n    color: #4ade80;\n}\n\n.stat-card-value[data-tone='gold'] {\n    color: #fbbf24;\n}\n\n.stat-card-value[data-tone='cost'],\n.stat-card-value[data-tone='negative'] {\n    color: #f87171;\n}\n\n.stats-section-title {\n    margin: 12px 0 6px;\n    color: rgba(255, 255, 255, 0.62);\n    font-size: 11px;\n    font-weight: 700;\n}\n\n.stats-list {\n    display: flex;\n    flex-wrap: wrap;\n    gap: 5px;\n}\n\n.stat-chip {\n    max-width: 100%;\n    overflow: hidden;\n    padding: 4px 6px;\n    border-radius: 6px;\n    background: rgba(109, 93, 252, 0.16);\n    color: #d8d8df;\n    font-size: 10px;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stat-chip[data-tone='uncommon'] {\n    background: rgba(132, 204, 22, 0.14);\n    color: #84cc16;\n}\n\n.stat-chip[data-tone='common'] {\n    background: rgba(156, 163, 175, 0.14);\n    color: #9ca3af;\n}\n\n.stat-chip[data-tone='fine'] {\n    background: rgba(59, 130, 246, 0.14);\n    color: #3b82f6;\n}\n\n.stat-chip[data-tone='rare'] {\n    background: rgba(168, 85, 247, 0.14);\n    color: #a855f7;\n}\n\n.stat-chip[data-tone='epic'] {\n    background: rgba(236, 72, 153, 0.14);\n    color: #ec4899;\n}\n\n.stat-chip[data-tone='legendary'] {\n    background: rgba(245, 158, 11, 0.14);\n    color: #f59e0b;\n}\n\n.stat-chip[data-tone='mythic'] {\n    background: rgba(239, 68, 68, 0.14);\n    color: #ef4444;\n}\n\n.stat-chip[data-tone='exotic'] {\n    background: rgba(6, 182, 212, 0.14);\n    color: #06b6d4;\n}\n\n.stat-chip[data-tone='arcane'] {\n    background: rgba(168, 85, 247, 0.14);\n    color: #a855f7;\n}\n\n.stat-chip[data-tone='relic'],\n.stat-chip[data-tone='treasure'] {\n    background: rgba(242, 204, 96, 0.14);\n    color: #f2cc60;\n}\n\n.stat-chip[data-tone='gear'] {\n    background: rgba(86, 212, 221, 0.14);\n    color: #7ce7ee;\n}\n\n.empty-stat {\n    color: rgba(255, 255, 255, 0.42);\n    font-size: 10px;\n    line-height: 1.45;\n}\n\n.stats-cost-note {\n    margin-top: 7px;\n    color: #fbbf24;\n    font-size: 10px;\n    line-height: 1.4;\n}\n\n.stats-cost-note[hidden] {\n    display: none;\n}\n\n.reset-stats {\n    width: 100%;\n    margin-top: 12px;\n    padding: 7px 10px;\n    border: 1px solid rgba(211, 72, 72, 0.52);\n    border-radius: 7px;\n    background: rgba(211, 72, 72, 0.12);\n    color: #ff9d9d;\n    font-size: 11px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.reset-stats:hover {\n    background: rgba(211, 72, 72, 0.22);\n}\n";
+	var panel_default = "* {\n    box-sizing: border-box;\n}\n\n.panel {\n    width: 280px;\n    max-width: calc(100vw - 32px);\n    padding: 14px;\n    border: 1px solid rgba(255, 255, 255, 0.18);\n    border-radius: 12px;\n    background: rgba(18, 18, 24, 0.94);\n    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.42);\n    color: #ffffff;\n    backdrop-filter: blur(12px);\n}\n\n.panel[data-collapsed='true'] {\n    width: auto;\n    padding: 7px;\n}\n\n.panel[data-collapsed='true'] .panel-content,\n.panel[data-collapsed='true'] .title-text {\n    display: none;\n}\n\n.header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n}\n\n.title {\n    display: flex;\n    align-items: center;\n    gap: 5px;\n    font-size: 15px;\n    font-weight: 700;\n}\n\n.collapse-toggle {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    width: 26px;\n    height: 26px;\n    flex-shrink: 0;\n    padding: 0;\n    border: 1px solid rgba(255, 255, 255, 0.16);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.08);\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 16px;\n    line-height: 1;\n    cursor: pointer;\n}\n\n.collapse-toggle:hover {\n    background: rgba(255, 255, 255, 0.14);\n}\n\n.panel-content {\n    max-height: calc(100vh - 96px);\n    overflow-x: hidden;\n    overflow-y: auto;\n    overscroll-behavior: contain;\n    margin-top: 10px;\n    padding-right: 2px;\n    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;\n    scrollbar-width: thin;\n}\n\n.panel-content::-webkit-scrollbar {\n    width: 6px;\n    height: 0;\n}\n\n.panel-content::-webkit-scrollbar-track {\n    background: transparent;\n}\n\n.panel-content::-webkit-scrollbar-thumb {\n    border-radius: 999px;\n    background: rgba(255, 255, 255, 0.24);\n}\n\n.panel-content::-webkit-scrollbar-thumb:hover {\n    background: rgba(255, 255, 255, 0.38);\n}\n\n.panel-content::-webkit-scrollbar-corner {\n    background: transparent;\n}\n\n.tabs {\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n    gap: 4px;\n    margin-bottom: 10px;\n    padding: 3px;\n    border-radius: 8px;\n    background: rgba(255, 255, 255, 0.07);\n}\n\n.panel-tab {\n    padding: 6px 8px;\n    border: 0;\n    border-radius: 6px;\n    background: transparent;\n    color: rgba(255, 255, 255, 0.56);\n    font-size: 12px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.panel-tab[data-active='true'] {\n    background: #6d5dfc;\n    color: #ffffff;\n}\n\n.panel-view[hidden] {\n    display: none;\n}\n\n.row {\n    display: flex;\n    justify-content: space-between;\n    gap: 10px;\n    margin-top: 7px;\n    font-size: 12px;\n    line-height: 1.4;\n}\n\n.label {\n    flex-shrink: 0;\n    color: rgba(255, 255, 255, 0.58);\n}\n\n.value {\n    min-width: 0;\n    overflow-wrap: anywhere;\n    text-align: right;\n    color: rgba(255, 255, 255, 0.92);\n}\n\n.field {\n    display: block;\n    margin-top: 12px;\n}\n\n.field-label {\n    display: block;\n    margin-bottom: 5px;\n    color: rgba(255, 255, 255, 0.58);\n    font-size: 12px;\n}\n\n.input {\n    width: 100%;\n    padding: 8px 9px;\n    border: 1px solid rgba(255, 255, 255, 0.18);\n    border-radius: 7px;\n    outline: none;\n    background: #252530;\n    color: rgba(255, 255, 255, 0.92);\n    color-scheme: dark;\n    font-size: 12px;\n}\n\n.input option {\n    background: #252530;\n    color: rgba(255, 255, 255, 0.92);\n}\n\n.input:focus {\n    border-color: #6d5dfc;\n}\n\n.input::placeholder {\n    color: rgba(255, 255, 255, 0.32);\n}\n\n.field-help {\n    margin-top: 6px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 11px;\n    line-height: 1.45;\n}\n\n.field-help[hidden] {\n    display: none;\n}\n\n.field-help a {\n    color: #9ea5ff;\n    text-decoration: underline;\n}\n\n.settings-section + .settings-section {\n    margin-top: 14px;\n    padding-top: 14px;\n    border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.settings-title {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 8px;\n    list-style: none;\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 12px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.settings-title::-webkit-details-marker {\n    display: none;\n}\n\n.settings-title::after {\n    content: '›';\n    color: rgba(255, 255, 255, 0.45);\n    font-size: 18px;\n    line-height: 1;\n    transform: rotate(0deg);\n    transition: transform 160ms ease;\n}\n\n.settings-section[open] > .settings-title::after {\n    transform: rotate(90deg);\n}\n\n.verification-history {\n    display: grid;\n    gap: 6px;\n    margin-top: 10px;\n}\n\n.verification-history-item {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n    min-height: 32px;\n    padding: 6px 8px;\n    border: 1px solid rgba(255, 255, 255, 0.1);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.04);\n}\n\n.verification-history-time,\n.verification-history-empty {\n    color: rgba(255, 255, 255, 0.62);\n    font-size: 11px;\n}\n\n.verification-history-empty {\n    padding: 8px 0;\n    text-align: center;\n}\n\n.verification-history-status {\n    flex: 0 0 auto;\n    font-size: 11px;\n    font-weight: 700;\n}\n\n.verification-history-status[data-success='true'] {\n    color: #6ee7a2;\n}\n\n.verification-history-status[data-success='false'] {\n    color: #ff9a9a;\n}\n\n.priority-heading {\n    margin-top: 12px;\n}\n\n.priority-list {\n    display: grid;\n    gap: 5px;\n}\n\n.priority-item {\n    display: grid;\n    grid-template-columns: auto minmax(0, 1fr) auto auto;\n    align-items: center;\n    gap: 6px;\n    min-height: 34px;\n    padding: 5px 6px;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 7px;\n    background: rgba(255, 255, 255, 0.045);\n    color: rgba(255, 255, 255, 0.86);\n    font-size: 11px;\n    cursor: grab;\n}\n\n.priority-item[data-dragging='true'] {\n    border-color: rgba(109, 93, 252, 0.72);\n    background: rgba(109, 93, 252, 0.18);\n    opacity: 0.72;\n    cursor: grabbing;\n}\n\n.priority-item[data-enabled='false'] {\n    color: rgba(255, 255, 255, 0.44);\n    opacity: 0.72;\n}\n\n.priority-item[data-enabled='boundary'] {\n    border-color: rgba(251, 191, 36, 0.42);\n    background: rgba(251, 191, 36, 0.08);\n}\n\n.priority-drag-handle {\n    color: rgba(255, 255, 255, 0.38);\n    font-size: 15px;\n    line-height: 1;\n}\n\n.priority-label {\n    overflow: hidden;\n    font-weight: 700;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.priority-state {\n    padding: 2px 5px;\n    border-radius: 999px;\n    background: rgba(74, 222, 128, 0.12);\n    color: #86efac;\n    font-size: 9px;\n    white-space: nowrap;\n}\n\n.priority-item[data-enabled='false'] .priority-state {\n    background: rgba(255, 255, 255, 0.08);\n    color: rgba(255, 255, 255, 0.48);\n}\n\n.priority-item[data-enabled='boundary'] .priority-state {\n    background: rgba(251, 191, 36, 0.12);\n    color: #fcd34d;\n}\n\n.priority-actions {\n    display: inline-flex;\n    gap: 3px;\n}\n\n.priority-move {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    width: 22px;\n    height: 22px;\n    padding: 0;\n    border: 1px solid rgba(255, 255, 255, 0.14);\n    border-radius: 5px;\n    background: rgba(255, 255, 255, 0.06);\n    color: rgba(255, 255, 255, 0.72);\n    font-size: 11px;\n    cursor: pointer;\n}\n\n.priority-move:hover:not(:disabled) {\n    background: rgba(109, 93, 252, 0.22);\n}\n\n.priority-move:disabled {\n    cursor: default;\n    opacity: 0.28;\n}\n\n.choice-list {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 6px;\n    margin-top: 8px;\n}\n\n.choice-list-three {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n}\n\n.choice-option {\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    padding: 7px 8px;\n    border: 1px solid rgba(255, 255, 255, 0.12);\n    border-radius: 7px;\n    color: rgba(255, 255, 255, 0.78);\n    font-size: 11px;\n    cursor: pointer;\n}\n\n.choice-option:has(input:checked) {\n    border-color: rgba(109, 93, 252, 0.72);\n    background: rgba(109, 93, 252, 0.14);\n    color: #ffffff;\n}\n\n.choice-option input {\n    margin: 0;\n    accent-color: #6d5dfc;\n}\n\n.settings-group[hidden] {\n    display: none;\n}\n\n.number-grid {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 8px;\n}\n\n.secondary-button {\n    width: 100%;\n    margin-top: 9px;\n    padding: 7px 10px;\n    border: 1px solid rgba(109, 93, 252, 0.55);\n    border-radius: 7px;\n    background: rgba(109, 93, 252, 0.12);\n    color: #b9b5ff;\n    font-size: 11px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.secondary-button:hover {\n    background: rgba(109, 93, 252, 0.22);\n}\n\n.secondary-button:disabled {\n    cursor: default;\n    opacity: 0.48;\n}\n\n.toggle {\n    width: 100%;\n    margin-top: 12px;\n    padding: 9px 12px;\n    border: 0;\n    border-radius: 8px;\n    background: #6d5dfc;\n    color: #ffffff;\n    font-size: 13px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.toggle:hover {\n    filter: brightness(1.08);\n}\n\n.toggle[data-enabled='true'] {\n    background: #d34848;\n}\n\n.option-row {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    gap: 10px;\n    margin-top: 10px;\n    color: rgba(255, 255, 255, 0.88);\n    font-size: 12px;\n    cursor: pointer;\n}\n\n.switch {\n    position: relative;\n    width: 38px;\n    height: 22px;\n    flex-shrink: 0;\n}\n\n.switch input {\n    position: absolute;\n    width: 1px;\n    height: 1px;\n    opacity: 0;\n}\n\n.switch-track {\n    display: block;\n    width: 100%;\n    height: 100%;\n    border-radius: 999px;\n    background: rgba(255, 255, 255, 0.2);\n    transition: background 0.15s ease;\n}\n\n.switch-track::after {\n    position: absolute;\n    top: 3px;\n    left: 3px;\n    width: 16px;\n    height: 16px;\n    border-radius: 50%;\n    background: #ffffff;\n    content: '';\n    transition: transform 0.15s ease;\n}\n\n.switch input:checked + .switch-track {\n    background: #6d5dfc;\n}\n\n.switch input:checked + .switch-track::after {\n    transform: translateX(16px);\n}\n\n.switch input:focus-visible + .switch-track {\n    outline: 2px solid #9ea5ff;\n    outline-offset: 2px;\n}\n\n.stats-filters {\n    display: grid;\n    gap: 6px;\n    margin-bottom: 8px;\n}\n\n.stats-filter span {\n    display: block;\n    margin-bottom: 3px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 10px;\n}\n\n.stats-select {\n    width: 100%;\n    padding: 6px 7px;\n    border: 1px solid rgba(255, 255, 255, 0.14);\n    border-radius: 6px;\n    outline: none;\n    background: #252530;\n    color: rgba(255, 255, 255, 0.9);\n    font-size: 10px;\n}\n\n.stats-select:focus {\n    border-color: #6d5dfc;\n}\n\n.stats-scope {\n    overflow: hidden;\n    color: rgba(255, 255, 255, 0.72);\n    font-size: 10px;\n    font-weight: 700;\n    text-align: center;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stats-start {\n    margin: 3px 0 9px;\n    color: rgba(255, 255, 255, 0.48);\n    font-size: 10px;\n    text-align: center;\n}\n\n.stats-grid {\n    display: grid;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    gap: 6px;\n}\n\n.stat-card {\n    min-width: 0;\n    padding: 8px;\n    border: 1px solid rgba(255, 255, 255, 0.1);\n    border-radius: 8px;\n    background: rgba(255, 255, 255, 0.055);\n}\n\n.stat-card-label {\n    display: block;\n    margin-bottom: 3px;\n    color: rgba(255, 255, 255, 0.5);\n    font-size: 10px;\n}\n\n.stat-card-value {\n    display: block;\n    overflow: hidden;\n    color: rgba(255, 255, 255, 0.94);\n    font-size: 13px;\n    line-height: 1.25;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stat-card-value[data-tone='income'],\n.stat-card-value[data-tone='positive'] {\n    color: #4ade80;\n}\n\n.stat-card-value[data-tone='gold'] {\n    color: #fbbf24;\n}\n\n.stat-card-value[data-tone='cost'],\n.stat-card-value[data-tone='negative'] {\n    color: #f87171;\n}\n\n.stats-section-title {\n    margin: 12px 0 6px;\n    color: rgba(255, 255, 255, 0.62);\n    font-size: 11px;\n    font-weight: 700;\n}\n\n.stats-list {\n    display: flex;\n    flex-wrap: wrap;\n    gap: 5px;\n}\n\n.stat-chip {\n    max-width: 100%;\n    overflow: hidden;\n    padding: 4px 6px;\n    border-radius: 6px;\n    background: rgba(109, 93, 252, 0.16);\n    color: #d8d8df;\n    font-size: 10px;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.stat-chip[data-tone='uncommon'] {\n    background: rgba(132, 204, 22, 0.14);\n    color: #84cc16;\n}\n\n.stat-chip[data-tone='common'] {\n    background: rgba(156, 163, 175, 0.14);\n    color: #9ca3af;\n}\n\n.stat-chip[data-tone='fine'] {\n    background: rgba(59, 130, 246, 0.14);\n    color: #3b82f6;\n}\n\n.stat-chip[data-tone='rare'] {\n    background: rgba(168, 85, 247, 0.14);\n    color: #a855f7;\n}\n\n.stat-chip[data-tone='epic'] {\n    background: rgba(236, 72, 153, 0.14);\n    color: #ec4899;\n}\n\n.stat-chip[data-tone='legendary'] {\n    background: rgba(245, 158, 11, 0.14);\n    color: #f59e0b;\n}\n\n.stat-chip[data-tone='mythic'] {\n    background: rgba(239, 68, 68, 0.14);\n    color: #ef4444;\n}\n\n.stat-chip[data-tone='exotic'] {\n    background: rgba(6, 182, 212, 0.14);\n    color: #06b6d4;\n}\n\n.stat-chip[data-tone='arcane'] {\n    background: rgba(168, 85, 247, 0.14);\n    color: #a855f7;\n}\n\n.stat-chip[data-tone='relic'],\n.stat-chip[data-tone='treasure'] {\n    background: rgba(242, 204, 96, 0.14);\n    color: #f2cc60;\n}\n\n.stat-chip[data-tone='gear'] {\n    background: rgba(86, 212, 221, 0.14);\n    color: #7ce7ee;\n}\n\n.empty-stat {\n    color: rgba(255, 255, 255, 0.42);\n    font-size: 10px;\n    line-height: 1.45;\n}\n\n.stats-cost-note {\n    margin-top: 7px;\n    color: #fbbf24;\n    font-size: 10px;\n    line-height: 1.4;\n}\n\n.stats-cost-note[hidden] {\n    display: none;\n}\n\n.reset-stats {\n    width: 100%;\n    margin-top: 12px;\n    padding: 7px 10px;\n    border: 1px solid rgba(211, 72, 72, 0.52);\n    border-radius: 7px;\n    background: rgba(211, 72, 72, 0.12);\n    color: #ff9d9d;\n    font-size: 11px;\n    font-weight: 700;\n    cursor: pointer;\n}\n\n.reset-stats:hover {\n    background: rgba(211, 72, 72, 0.22);\n}\n";
+	function loadLoginMonitorSettings() {
+		try {
+			return {
+				enabled: localStorage.getItem(LOGIN_MONITOR_ENABLED_STORAGE_KEY) === "1",
+				machineName: localStorage.getItem(LOGIN_MONITOR_MACHINE_NAME_STORAGE_KEY)?.trim() ?? "",
+				botKey: localStorage.getItem(LOGIN_MONITOR_BOT_KEY_STORAGE_KEY)?.trim() ?? "",
+				username: localStorage.getItem(LOGIN_MONITOR_USERNAME_STORAGE_KEY)?.trim() ?? "",
+				password: localStorage.getItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY) ?? ""
+			};
+		} catch (error) {
+			console.warn("[监控登录] 无法读取设置：", error);
+			return { enabled: false, machineName: "", botKey: "", username: "", password: "" };
+		}
+	}
+	function saveLoginMonitorSettings(settings) {
+		try {
+			localStorage.setItem(LOGIN_MONITOR_ENABLED_STORAGE_KEY, settings.enabled ? "1" : "0");
+			if (settings.machineName) localStorage.setItem(LOGIN_MONITOR_MACHINE_NAME_STORAGE_KEY, settings.machineName);
+			else localStorage.removeItem(LOGIN_MONITOR_MACHINE_NAME_STORAGE_KEY);
+			if (settings.botKey) localStorage.setItem(LOGIN_MONITOR_BOT_KEY_STORAGE_KEY, settings.botKey);
+			else localStorage.removeItem(LOGIN_MONITOR_BOT_KEY_STORAGE_KEY);
+			if (settings.username) localStorage.setItem(LOGIN_MONITOR_USERNAME_STORAGE_KEY, settings.username);
+			else localStorage.removeItem(LOGIN_MONITOR_USERNAME_STORAGE_KEY);
+			if (settings.password) localStorage.setItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY, settings.password);
+			else localStorage.removeItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY);
+		} catch (error) {
+			console.warn("[监控登录] 无法保存设置：", error);
+		}
+	}
+	function loadLoginMonitorLogoutNotified() {
+		try {
+			return localStorage.getItem(LOGIN_MONITOR_LOGOUT_NOTIFIED_STORAGE_KEY) === "1";
+		} catch {
+			return false;
+		}
+	}
+	function saveLoginMonitorLogoutNotified(value) {
+		try {
+			localStorage.setItem(LOGIN_MONITOR_LOGOUT_NOTIFIED_STORAGE_KEY, value ? "1" : "0");
+		} catch (error) {
+			console.warn("[监控登录] 无法保存登出通知标记：", error);
+		}
+	}
+	var loginMonitorSettings = loadLoginMonitorSettings();
+	var loginMonitorRunning = false;
+	var loginMonitorLoggingIn = false;
+	var loginMonitorStatusEl = null;
+	function setLoginMonitorStatus(text) {
+		if (loginMonitorStatusEl) loginMonitorStatusEl.textContent = text;
+		console.log("[监控登录] " + text);
+	}
+
+	function sendWxBot(botKey, msg) {
+		if (!botKey) return;
+		const url = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${botKey}`;
+		const payload = {
+			msgtype: "markdown_v2",
+			markdown_v2: { content: msg }
+		};
+
+		try {
+			GM_xmlhttpRequest({
+				method: 'POST',
+				url: url,
+				headers: { 'Content-Type': 'application/json' },
+				data: JSON.stringify(payload),
+				timeout: 10000,
+				onload: (res) => {
+					try {
+						const data = JSON.parse(res.responseText);
+						if (data.errcode === 0) {
+							console.log('✅ 微信消息推送成功');
+						} else {
+							console.error('❌ 微信消息推送失败:', data);
+						}
+					} catch (parseErr) {
+						console.error('❌ 微信响应解析失败:', res.responseText);
+					}
+				},
+				onerror: (err) => {
+					console.error('❌ 微信推送异常:', err);
+				},
+				ontimeout: () => {
+					console.error('❌ 微信推送超时');
+				}
+			});
+		} catch (e) {
+			// 降级使用 fetch（可能需要 CORS 支持）
+			fetch(url, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			}).catch(err => {
+				console.error('❌ 微信推送降级失败:', err);
+			});
+		}
+	}
+
+	function formatBotMessage(content) {
+		const machineName = loginMonitorSettings.machineName;
+		const prefix = machineName ? `【${machineName}】` : '【ArcaneAngler】';
+		return `${prefix} ${content}`;
+	}
+
+	function isLoggedOut() {
+		// 查找"即刻游玩"按钮（仅可见的）
+		const buttons = document.querySelectorAll('button');
+		for (const btn of buttons) {
+			if (btn.textContent.includes('即刻游玩')) {
+				// 检查按钮是否可见（防止登录弹窗打开时误判）
+				const rect = btn.getBoundingClientRect();
+				const style = getComputedStyle(btn);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	function clickPlayButton() {
+		const buttons = document.querySelectorAll('button');
+		for (const btn of buttons) {
+			if (btn.textContent.trim() === '游玩') {
+				btn.click();
+				console.log('✅ 已点击游玩按钮');
+				// 点击成功后发送通知
+				if (loginMonitorRunning) {
+					const botKey = loginMonitorSettings.botKey;
+					if (botKey) {
+						const msg = formatBotMessage('✅ 网页重新登录成功，已恢复在线状态。');
+						sendWxBot(botKey, msg);
+					}
+					// 登录成功，清除登出通知标记，允许下次登出再次推送
+					saveLoginMonitorLogoutNotified(false);
+				}
+				// 延迟重置登录标志，让页面有时间完成跳转
+				setTimeout(() => {
+					if (!loginMonitorRunning) return;
+					// 确认"即刻游玩"按钮已消失（真正登录成功）才重置
+					if (!isLoggedOut()) {
+						loginMonitorLoggingIn = false;
+					}
+				}, 5000);
+				return true;
+			}
+		}
+		console.log('⚠️ 未找到游玩按钮，等待重试...');
+		return false;
+	}
+
+	function performAutoLogin() {
+		if (!loginMonitorRunning) return;
+		// 防止重复触发登录流程
+		if (loginMonitorLoggingIn) return;
+		loginMonitorLoggingIn = true;
+
+		// 发送登出通知（只在本次登出流程首次触发时推送一次。
+		// 通过 LOGOUT_NOTIFIED 持久化标记确保：即使页面刷新/重载也不会重复推送）
+		const botKey = loginMonitorSettings.botKey;
+		if (botKey && !loadLoginMonitorLogoutNotified()) {
+			const msg = formatBotMessage('⚠️ 检测到网页已登出，正在自动重新登录...');
+			sendWxBot(botKey, msg);
+			saveLoginMonitorLogoutNotified(true);
+		}
+
+		// 点击「即刻游玩」按钮打开登录弹窗，然后等待弹窗出现
+		tryClickPlayAndWait();
+	}
+
+	function tryClickPlayAndWait() {
+		if (!loginMonitorRunning) return;
+
+		// 先检查登录输入框是否已可见（登录弹窗已打开）
+		const existingInputs = findLoginInputs();
+		if (existingInputs) {
+			console.log('🔑 登录弹窗已打开，直接填充登录');
+			fillAndLogin();
+			return;
+		}
+
+		// 点击「即刻游玩」按钮打开登录弹窗
+		const clicked = tryClickPlayButtonOnce();
+		if (!clicked) {
+			console.log('⚠️ 未找到「即刻游玩」按钮');
+			loginMonitorLoggingIn = false;
+			return;
+		}
+
+		// 点击后等待登录弹窗完全出现（每 500ms 检查一次，最多 10 秒）
+		waitForLoginForm(0);
+	}
+
+	function tryClickPlayButtonOnce() {
+		const playButtons = document.querySelectorAll('button');
+		for (const btn of playButtons) {
+			if (btn.textContent.includes('即刻游玩')) {
+				const rect = btn.getBoundingClientRect();
+				const style = getComputedStyle(btn);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					btn.click();
+					console.log('🎣 点击「即刻游玩」按钮');
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	function waitForLoginForm(attempts) {
+		if (!loginMonitorRunning) return;
+		if (attempts > 20) {
+			console.log('⚠️ 登录弹窗未出现，停止等待');
+			loginMonitorLoggingIn = false;
+			return;
+		}
+
+		// 查找登录输入框（「即刻游玩」按钮是否存在不影响判断，
+		// 因为登录弹窗可能以模态框形式叠加在页面上方）
+		const loginInputs = findLoginInputs();
+		if (!loginInputs) {
+			// 登录弹窗尚未打开
+			console.log('⏳ 等待登录弹窗打开...');
+			// 如果页面仍显示「即刻游玩」，尝试再次点击
+			if (isLoggedOut()) {
+				tryClickPlayButtonOnce();
+			}
+			setTimeout(() => waitForLoginForm(attempts + 1), 500);
+			return;
+		}
+
+		console.log('✅ 登录弹窗已出现');
+
+		// 从悬浮窗读取账号密码
+		const savedUsername = loginMonitorSettings.username;
+		const savedPassword = loginMonitorSettings.password;
+
+		if (!savedUsername || !savedPassword) {
+			console.log('⚠️ 未配置账号密码，请在悬浮窗填写');
+			setLoginMonitorStatus('请填写账号密码');
+			// 尝试直接点击登录，让用户看到错误
+			tryClickLogin();
+			return;
+		}
+
+		// 直接用悬浮窗配置的账号密码填充登录表单
+		console.log('🔑 使用配置的账号密码填充登录表单...');
+		setReactInputValue(loginInputs.account, savedUsername);
+		setReactInputValue(loginInputs.password, savedPassword);
+
+		// 验证填充结果
+		setTimeout(() => {
+			if (!loginMonitorRunning) return;
+			const current = findLoginInputs();
+			if (!current) {
+				setTimeout(() => waitForLoginForm(attempts + 1), 500);
+				return;
+			}
+
+			// 再次确认值已设置
+			const accountFilled = current.account.value.trim() !== '';
+			const passwordFilled = current.password.value.trim() !== '';
+
+			if (accountFilled && passwordFilled) {
+				console.log('✅ 账号密码填充成功');
+				tryClickLogin();
+			} else if (accountFilled || passwordFilled) {
+				// 部分填充成功，补充填充缺失的
+				console.log('⚠️ 部分字段填充成功，补充剩余字段...');
+				if (!accountFilled) {
+					setReactInputValue(current.account, savedUsername);
+				}
+				if (!passwordFilled) {
+					setReactInputValue(current.password, savedPassword);
+				}
+				setTimeout(() => tryClickLogin(), 300);
+			} else {
+				console.log('⚠️ 填充后值被清空，重试...');
+				// 可能是 React 受控组件覆盖，尝试再次写入
+				setReactInputValue(current.account, savedUsername);
+				setReactInputValue(current.password, savedPassword);
+				setTimeout(() => {
+					if (!loginMonitorRunning) return;
+					const final = findLoginInputs();
+					if (final) {
+						// 第二次填充后无论结果如何都尝试登录
+						if (final.account.value.trim() === '' && savedUsername) {
+							// 强制赋值
+							setReactInputValue(final.account, savedUsername);
+						}
+						if (final.password.value.trim() === '' && savedPassword) {
+							setReactInputValue(final.password, savedPassword);
+						}
+						console.log('⚠️ 第二次填充完成，尝试登录...');
+						setTimeout(() => {
+							if (!loginMonitorRunning) return;
+							tryClickLogin();
+						}, 300);
+					}
+				}, 500);
+			}
+		}, 300);
+	}
+
+	function fillAndLogin() {
+		// 直接登录弹窗已打开的场景：读取配置并填充
+		const savedUsername = loginMonitorSettings.username;
+		const savedPassword = loginMonitorSettings.password;
+
+		if (!savedUsername || !savedPassword) {
+			console.log('⚠️ 未配置账号密码，请在悬浮窗填写');
+			setLoginMonitorStatus('请填写账号密码');
+			loginMonitorLoggingIn = false;
+			return;
+		}
+
+		const loginInputs = findLoginInputs();
+		if (!loginInputs) {
+			loginMonitorLoggingIn = false;
+			return;
+		}
+
+		console.log('🔑 填充账号密码...');
+		setReactInputValue(loginInputs.account, savedUsername);
+		setReactInputValue(loginInputs.password, savedPassword);
+
+		// 等待 React 状态同步后点击登录
+		setTimeout(() => {
+			if (!loginMonitorRunning) return;
+			const current = findLoginInputs();
+			if (!current) {
+				loginMonitorLoggingIn = false;
+				return;
+			}
+
+			if (current.account.value.trim() !== '' && current.password.value.trim() !== '') {
+				tryClickLogin();
+			} else {
+				// 重试填充
+				setReactInputValue(current.account, savedUsername);
+				setReactInputValue(current.password, savedPassword);
+				setTimeout(() => {
+					if (!loginMonitorRunning) return;
+					tryClickLogin();
+				}, 300);
+			}
+		}, 300);
+	}
+
+	function setReactInputValue(input, value) {
+		// 使用 React Fiber 方式设置值
+		try {
+			// 查找 React 内部属性
+			const propsKey = Object.keys(input).find(k => k.startsWith('__reactProps$'));
+			const fiberKey = Object.keys(input).find(k => k.startsWith('__reactFiber$'));
+
+			// 使用原生 setter 写入值（绕过 React 的 value 拦截）
+			const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+			valueSetter.call(input, value);
+
+			if (propsKey) {
+				// 直接调用 React 的 onChange
+				const props = input[propsKey];
+				if (typeof props.onChange === 'function') {
+					const event = {
+						target: input,
+						currentTarget: input,
+						preventDefault() {},
+						stopPropagation() {},
+						bubbles: true,
+						cancelable: true,
+						type: 'change',
+						persist() {}
+					};
+					props.onChange(event);
+				}
+				// 同时派发原生 input 事件
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			} else if (fiberKey) {
+				// 通过 Fiber 查找 onChange
+				let node = input[fiberKey];
+				let memoizedProps = null;
+				while (node) {
+					if (node.memoizedProps && typeof node.memoizedProps.onChange === 'function') {
+						memoizedProps = node.memoizedProps;
+						break;
+					}
+					node = node.return;
+				}
+				if (memoizedProps && typeof memoizedProps.onChange === 'function') {
+					const event = {
+						target: input,
+						currentTarget: input,
+						preventDefault() {},
+						stopPropagation() {},
+						bubbles: true,
+						cancelable: true,
+						type: 'change'
+					};
+					memoizedProps.onChange(event);
+				}
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			} else {
+				// 降级：直接设置并派发事件
+				input.dispatchEvent(new InputEvent('input', {
+					bubbles: true,
+					data: value,
+					inputType: 'insertText'
+				}));
+				input.dispatchEvent(new Event('change', { bubbles: true }));
+			}
+
+			// 额外：用输入法模拟输入（某些 React 组件需要）
+			input.focus();
+			valueSetter.call(input, '');
+			input.dispatchEvent(new InputEvent('input', {
+				bubbles: true,
+				inputType: 'deleteContentBackward'
+			}));
+			valueSetter.call(input, value);
+			input.dispatchEvent(new InputEvent('input', {
+				bubbles: true,
+				data: value,
+				inputType: 'insertText'
+			}));
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		} catch (e) {
+			// 最后一招：直接赋值
+			input.value = value;
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		}
+	}
+
+	function findLoginInputs() {
+		// 判断标准：登录页面的账号密码输入框 + type=submit 的登录按钮（与需求文档 outerHTML 一致）
+		// 悬浮窗自身没有 submit 按钮，不会误判
+		try {
+			// 1. 先确认登录页面存在（找到 type=submit 且文本含「登录」的按钮，即需求中的登录按钮 HTML）
+			let loginBtn = null;
+			const allButtons = document.querySelectorAll('button[type="submit"]');
+			for (const btn of allButtons) {
+				const txt = (btn.textContent || '').trim();
+				if (txt.includes('登录')) {
+					const rect = btn.getBoundingClientRect();
+					const style = getComputedStyle(btn);
+					if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+						loginBtn = btn;
+						break;
+					}
+				}
+			}
+			// 没有登录按钮，说明不在登录页面
+			if (!loginBtn) return null;
+
+			// 2. 在登录页面内找账号密码输入框
+			const inputs = Array.from(document.querySelectorAll('input'));
+			const visibleInputs = inputs.filter(inp => {
+				const rect = inp.getBoundingClientRect();
+				if (rect.width <= 0 || rect.height <= 0) return false;
+				// 确保不在隐藏的父容器内
+				let parent = inp.parentElement;
+				let inPanel = false;
+				while (parent) {
+					if (parent.id === 'arcane-angler-cast-panel-host') {
+						inPanel = true;
+						break;
+					}
+					const style = getComputedStyle(parent);
+					if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+						return false;
+					}
+					parent = parent.parentElement;
+				}
+				return !inPanel;
+			});
+
+			if (visibleInputs.length === 0) return null;
+
+			// 密码输入框：type=password（登录页面必有一个）
+			const password = visibleInputs.find(inp => inp.type === 'password');
+			if (!password) return null;
+
+			// 账号输入框：placeholder 为 "Enter username" 的可见输入框
+			const account = visibleInputs.find(inp =>
+				inp.type !== 'password' &&
+				((inp.placeholder || '').toLowerCase().includes('username') ||
+				(inp.placeholder || '').toLowerCase().includes('user') ||
+				(inp.name || '').toLowerCase() === 'username')
+			);
+			if (!account) return null;
+
+			return { account, password };
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function setupReactInput(input) {
+		// ============ 最可靠方案：直接调用 React Fiber 的 onChange ============
+		try {
+			// 找到 React 内部属性键（如 __reactProps$xxx 或 __reactFiber$xxx）
+			const propsKey = Object.keys(input).find(k => k.startsWith('__reactProps$'));
+			const fiberKey = Object.keys(input).find(k => k.startsWith('__reactFiber$'));
+
+			const domValue = input.value;
+
+			if (propsKey) {
+				// React 受控组件：调用其 onChange/onInput 处理函数
+				const props = input[propsKey];
+				// 先设置原生 value（绕过 React value 拦截）
+				const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+				valueSetter.call(input, domValue);
+
+				// 模拟真实用户输入事件
+				if (typeof props.onChange === 'function') {
+					const event = {
+						target: input,
+						currentTarget: input,
+						nativeEvent: {
+							inputType: 'insertText',
+							data: domValue,
+							isTrusted: false
+						},
+						preventDefault() {},
+						stopPropagation() {},
+						bubbles: true,
+						cancelable: true,
+						type: 'change',
+						persist() {}
+					};
+					props.onChange(event);
+				}
+
+				// 同时派发 input 事件作为兜底
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			} else if (fiberKey) {
+				// 通过 Fiber 触发
+				const fiber = input[fiberKey];
+				let memoizedProps = null;
+				let node = fiber;
+				while (node) {
+					if (node.memoizedProps && typeof node.memoizedProps.onChange === 'function') {
+						memoizedProps = node.memoizedProps;
+						break;
+					}
+					node = node.return;
+				}
+
+				const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+				valueSetter.call(input, domValue);
+
+				if (memoizedProps && typeof memoizedProps.onChange === 'function') {
+					const event = {
+						target: input,
+						currentTarget: input,
+						preventDefault() {},
+						stopPropagation() {},
+						bubbles: true,
+						cancelable: true,
+						type: 'change'
+					};
+					memoizedProps.onChange(event);
+				}
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			} else {
+				// 降级：标准 InputEvent 派发
+				const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+				valueSetter.call(input, domValue);
+				input.dispatchEvent(new InputEvent('input', {
+					bubbles: true,
+					data: domValue,
+					inputType: 'insertText',
+					isComposing: false
+				}));
+				input.dispatchEvent(new Event('change', { bubbles: true }));
+			}
+		} catch (e) {
+			// 最后的兜底
+			try {
+				const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+				valueSetter.call(input, input.value);
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+				input.dispatchEvent(new Event('change', { bubbles: true }));
+			} catch (e2) {
+				input.value = input.value;
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			}
+		}
+	}
+
+	function tryClickLogin() {
+		// 每次都重新查找登录按钮（防止 DOM 重渲染导致引用失效）
+		const loginBtn = document.querySelector('button[type="submit"]');
+		if (loginBtn && (loginBtn.textContent.includes('登录') || loginBtn.type === 'submit')) {
+			// 先尝试获取当前输入值
+			const current = findLoginInputs();
+			if (current) {
+				// 检查是否已有值（浏览器可能已经填充）
+				if (current.account.value.trim() !== '' || current.password.value.trim() !== '') {
+					// 同步 React 状态（使用 Fiber 或事件派发）
+					setupReactInput(current.account);
+					setupReactInput(current.password);
+				}
+			}
+
+			// 点击登录按钮（如果 disabled 则等待启用后再点）
+			const doClick = () => {
+				if (!loginMonitorRunning) return;
+				// 重新获取当前按钮引用
+				const btn = document.querySelector('button[type="submit"]');
+				if (btn && !btn.disabled) {
+					btn.click();
+					console.log('✅ 已点击登录按钮');
+				} else if (btn && btn.disabled) {
+					// 按钮 disabled，等待 500ms 后重试
+					console.log('⏳ 登录按钮尚未启用，等待...');
+					setTimeout(doClick, 500);
+				} else {
+					console.log('⚠️ 登录按钮已移除');
+				}
+			};
+			setTimeout(doClick, 300);
+
+			// 等待跳转后点击游玩按钮
+			setTimeout(() => {
+				if (!loginMonitorRunning) return;
+				const clickedPlay = clickPlayButton();
+				if (!clickedPlay) {
+					// 等待跳转后重试
+					let retryCount = 0;
+					const retryPlay = () => {
+						if (!loginMonitorRunning) return;
+						retryCount++;
+						const ok = clickPlayButton();
+						if (!ok && retryCount < 10) {
+							setTimeout(retryPlay, 2000);
+						} else if (!ok) {
+							loginMonitorLoggingIn = false;
+						}
+					};
+					setTimeout(retryPlay, 2000);
+				}
+			}, 3000);
+		} else {
+			// 未找到登录按钮，可能弹窗还没完全出来，继续等待
+			console.log('⚠️ 未找到登录按钮，继续等待...');
+			setTimeout(() => waitForLoginForm(0), 1000);
+		}
+	}
+
+	function checkAndLogin() {
+		if (!loginMonitorRunning) return;
+
+		if (isLoggedOut()) {
+			console.log('🚨 检测到网页已登出');
+			// 只有在没有正在进行的登录流程时才触发
+			if (!loginMonitorLoggingIn) {
+				performAutoLogin();
+			}
+		}
+
+		// 每隔2秒检查一次
+		setTimeout(checkAndLogin, 2000);
+	}
+
+	function startCheckFromPlay() {
+		// 每次启动监控时，从「即刻游玩」按钮开始检查
+		// 先检测当前页面是否有「即刻游玩」按钮
+		if (!isLoggedOut()) {
+			console.log('✅ 启动检查：未检测到登出（无「即刻游玩」按钮）');
+			return;
+		}
+
+		// 有「即刻游玩」按钮，说明已登出，走完整自动登录流程
+		console.log('🚨 启动检查：检测到已登出，开始自动登录');
+		performAutoLogin();
+	}
+	function waitForElement(tag, text, timeout, onFound, onTimeout) {
+		const start = Date.now();
+		const check = () => {
+			if (!loginMonitorRunning) return;
+			const els = document.querySelectorAll(tag);
+			for (const el of els) {
+				if ((el.textContent || '').includes(text)) {
+					onFound && onFound();
+					return;
+				}
+			}
+			if (Date.now() - start < timeout) {
+				setTimeout(check, 200);
+			} else {
+				onTimeout && onTimeout();
+			}
+		};
+		check();
+	}
+
+	let loginMonitorDailyRewardTimer = null;
+	let loginMonitorNextDailyRewardTime = null;
+	let loginMonitorRewardProcessing = false;
+	let loginMonitorDailyRewardPopupTimer = null;
+
+	function startDailyLoginReward() {
+		if (loginMonitorDailyRewardTimer) return;
+		// 安排今天 08:10-08:15 随机时间
+		scheduleDailyReward();
+		// 每 30 秒检查：到点主动领取；其余时间检测黄色按钮
+		loginMonitorDailyRewardTimer = setInterval(dailyRewardTick, 30000);
+		// 监控自动弹出的每日奖励页面
+		startDailyRewardPopupWatcher();
+	}
+
+	function scheduleDailyReward() {
+		// 每天 08:10:00 - 08:15:00 随机一个时间
+		const now = new Date();
+		const target = new Date(now);
+		target.setHours(8, 10 + Math.floor(Math.random() * 6), 0, 0);
+		if (target <= now) {
+			target.setDate(target.getDate() + 1);
+		}
+		loginMonitorNextDailyRewardTime = target;
+		console.log(`[奖励] 已安排每日奖励领取时间：${target.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+	}
+
+	function dailyRewardTick() {
+		if (!loginMonitorRunning) return;
+		// 仅在已登录状态下执行
+		if (isLoggedOut()) return;
+		if (loginMonitorRewardProcessing) return;
+
+		// 到点主动触发
+		if (loginMonitorNextDailyRewardTime && Date.now() >= loginMonitorNextDailyRewardTime.getTime()) {
+			console.log('[奖励] 到达每日奖励领取时间');
+			doDailyReward(() => {
+				scheduleDailyReward();
+			});
+			return;
+		}
+
+		// 其余时间：检测黄色入口按钮，若存在则领取
+		const entryBtn = findDailyRewardButton();
+		if (entryBtn && isYellowEntry(entryBtn)) {
+			console.log('[奖励] 检测到黄色入口按钮，执行领取');
+			doDailyReward();
+		}
+	}
+
+	// 查找「每日登录奖励」入口按钮（按 title 或文本精确「每日」判断，兼容汉化）
+	function findDailyRewardButton() {
+		const buttons = document.querySelectorAll('button');
+		for (const btn of buttons) {
+			const title = (btn.title || '').trim().toLowerCase();
+			const txt = (btn.textContent || '').trim();
+			const titleMatch = title.includes('daily login reward') || title.includes('每日登录奖励');
+			const textMatch = txt === '每日';
+			if (titleMatch || textMatch) {
+				const rect = btn.getBoundingClientRect();
+				const style = getComputedStyle(btn);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					return btn;
+				}
+			}
+		}
+		return null;
+	}
+
+	// 判断入口按钮是否为黄色（未领取）
+	function isYellowEntry(btn) {
+		const cls = btn.className || '';
+		return cls.includes('bg-yellow');
+	}
+
+	function doDailyReward(onDone) {
+		// 仅在已登录状态下执行
+		if (isLoggedOut()) {
+			console.log('[奖励] 未登录，跳过每日奖励领取');
+			onDone && onDone();
+			return;
+		}
+		loginMonitorRewardProcessing = true;
+
+		try {
+			// 如果每日奖励页面已经自动打开，直接处理领取，不再点击入口按钮
+			if (findRewardPanelTitle()) {
+				console.log('[奖励] 每日奖励页面已打开，直接处理领取');
+				waitForRewardContent(0, onDone);
+				return;
+			}
+
+			const entryBtn = findDailyRewardButton();
+			if (!entryBtn) {
+				console.log('[奖励] 未找到每日登录奖励入口按钮');
+				loginMonitorRewardProcessing = false;
+				onDone && onDone();
+				return;
+			}
+
+			entryBtn.click();
+			console.log('[奖励] 已点击「每日」入口按钮');
+
+			waitForElement(
+				'h2', '每日登录奖励', 10000,
+				() => {
+					waitForRewardContent(0, onDone);
+				},
+				() => {
+					console.warn('[奖励] 未出现「每日登录奖励」面板，主动关闭面板');
+					closeRewardPanel(() => {
+						loginMonitorRewardProcessing = false;
+						onDone && onDone();
+					});
+				}
+			);
+		} catch (e) {
+			console.error('[奖励] 执行出错:', e);
+			loginMonitorRewardProcessing = false;
+			onDone && onDone();
+		}
+	}
+
+	// 等待每日奖励面板内的领取按钮或已领取提示渲染
+	function waitForRewardContent(attempts, onDone) {
+		// 最多等待 10 秒（20 次 × 500ms）
+		if (attempts > 20) {
+			console.warn('[奖励] 等待领取按钮/已领取提示超时，主动关闭面板');
+			closeRewardPanel(() => {
+				sendRewardMessage('failed');
+				loginMonitorRewardProcessing = false;
+				onDone && onDone();
+			});
+			return;
+		}
+
+		// 已领取提示
+		if (findComeBackTomorrowText()) {
+			console.log('[奖励] 检测到已领取提示，每日奖励已领取');
+			closeRewardPanel(() => {
+				sendRewardMessage('already');
+				loginMonitorRewardProcessing = false;
+				onDone && onDone();
+			});
+			return;
+		}
+
+		// 领取按钮
+		const claimBtn = findClaimButton();
+		if (claimBtn) {
+			const claimText = (claimBtn.textContent || '').trim();
+			console.log(`[奖励] 点击领取按钮：${claimText}`);
+			claimBtn.click();
+
+			let clickAttempts = 0;
+			const checkClaimed = () => {
+				clickAttempts++;
+				const btn = findClaimButton();
+				if (!btn) {
+					console.log('[奖励] ✅ 领取按钮已消失，领取成功');
+					closeRewardPanel(() => {
+						sendRewardMessage('claimed');
+						loginMonitorRewardProcessing = false;
+						onDone && onDone();
+					});
+					return;
+				}
+				if (clickAttempts <= 5) {
+					console.log(`[奖励] 领取按钮仍存在，重试 ${clickAttempts} 次`);
+					btn.click();
+					setTimeout(checkClaimed, 800);
+				} else {
+					console.log('[奖励] 领取多次失败，停止本次操作');
+					closeRewardPanel(() => {
+						sendRewardMessage('failed');
+						loginMonitorRewardProcessing = false;
+						onDone && onDone();
+					});
+				}
+			};
+			setTimeout(checkClaimed, 800);
+			return;
+		}
+
+		// 两者都未出现，继续等待
+		setTimeout(() => waitForRewardContent(attempts + 1, onDone), 500);
+	}
+
+	// 查找「每日登录奖励」页面标题（用于检测自动弹出的面板）
+	function findRewardPanelTitle() {
+		const h2s = document.querySelectorAll('h2');
+		for (const h2 of h2s) {
+			const text = (h2.textContent || '').trim();
+			if (text.includes('每日登录奖励')) {
+				const rect = h2.getBoundingClientRect();
+				const style = getComputedStyle(h2);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					return h2;
+				}
+			}
+		}
+		return null;
+	}
+
+	// 监控自动弹出的每日奖励页面
+	function startDailyRewardPopupWatcher() {
+		// 每 2 秒检测一次
+		loginMonitorDailyRewardPopupTimer = setInterval(checkDailyRewardPopup, 2000);
+	}
+
+	function checkDailyRewardPopup() {
+		if (!loginMonitorRunning) return;
+		// 仅在已登录状态下执行
+		if (isLoggedOut()) return;
+		if (loginMonitorRewardProcessing) return;
+
+		// 检测每日奖励页面标题是否出现（面板已自动打开）
+		if (!findRewardPanelTitle()) return;
+
+		console.log('[奖励] 检测到每日奖励页面自动弹出');
+		loginMonitorRewardProcessing = true;
+		waitForRewardContent(0, null);
+	}
+
+	// 判断每日奖励是否已领取（出现 "Come back tomorrow" 提示）
+	function findComeBackTomorrowText() {
+		const divs = document.querySelectorAll('div');
+		for (const div of divs) {
+			const text = (div.textContent || '').trim().toLowerCase();
+			if (text.includes('come back tomorrow')) {
+				const rect = div.getBoundingClientRect();
+				const style = getComputedStyle(div);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					return div;
+				}
+			}
+		}
+		return null;
+	}
+
+	// 查找「领取第 X 天奖励」按钮（按包含「领取」且含「奖励」判断）
+	function findClaimButton() {
+		const buttons = document.querySelectorAll('button');
+		for (const btn of buttons) {
+			const txt = (btn.textContent || '').trim();
+			if (txt.includes('领取') && txt.includes('奖励')) {
+				const rect = btn.getBoundingClientRect();
+				const style = getComputedStyle(btn);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					return btn;
+				}
+			}
+		}
+		return null;
+	}
+
+	// 关闭每日奖励面板（点击 × 按钮）
+	function closeRewardPanel(onDone) {
+		const allButtons = document.querySelectorAll('button');
+		for (const btn of allButtons) {
+			const txt = (btn.textContent || '').trim();
+			if (txt.includes('×')) {
+				const rect = btn.getBoundingClientRect();
+				const style = getComputedStyle(btn);
+				if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') {
+					btn.click();
+					console.log('[奖励] 已点击 × 关闭面板');
+					if (onDone) setTimeout(onDone, 500);
+					return;
+				}
+			}
+		}
+		console.warn('[奖励] 未找到关闭按钮，跳过关闭');
+		if (onDone) onDone();
+	}
+
+	// 推送每日奖励结果微信消息
+	function sendRewardMessage(type) {
+		const botKey = loginMonitorSettings.botKey;
+		if (!botKey) return;
+		let msg;
+		if (type === 'claimed') {
+			msg = formatBotMessage('✅ 每日奖励领取成功');
+		} else if (type === 'already') {
+			msg = formatBotMessage('✅ 每日奖励已领取');
+		} else {
+			msg = formatBotMessage('⚠️ 每日奖励领取失败，请手动处理');
+		}
+		sendWxBot(botKey, msg);
+		console.log(`[奖励] 已推送每日奖励消息：${type}`);
+	}
+	function stopDailyLoginReward() {
+		if (loginMonitorDailyRewardTimer) {
+			clearInterval(loginMonitorDailyRewardTimer);
+			loginMonitorDailyRewardTimer = null;
+		}
+		if (loginMonitorDailyRewardPopupTimer) {
+			clearInterval(loginMonitorDailyRewardPopupTimer);
+			loginMonitorDailyRewardPopupTimer = null;
+		}
+		loginMonitorRewardProcessing = false;
+	}
+
+	function startLoginMonitor() {
+		if (loginMonitorRunning) return;
+		loginMonitorRunning = true;
+		loginMonitorLoggingIn = false;
+		setLoginMonitorStatus("监控中");
+		console.log("[监控登录] 监控已启动");
+		startCheckFromPlay();
+		checkAndLogin();
+		startDailyLoginReward();
+	}
+	function stopLoginMonitor() {
+		loginMonitorRunning = false;
+		loginMonitorLoggingIn = false;
+		stopDailyLoginReward();
+		setLoginMonitorStatus("未监控");
+		console.log("[监控登录] 监控已关闭");
+	}
 	function createPanelController({ actions, formatScheduleDuration, getState }) {
 		let panelCollapsed = loadPanelCollapsed();
 		let panelView = "control";
@@ -3345,7 +4390,7 @@
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
 		let ui = null;
-		const { requestBrowserNotificationPermission, resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setNotificationMode, setPushKey, setScheduleEnabled, setScheduleGameAutoFishingDuringRest, setScheduleMinutes } = actions;
+		const { requestBrowserNotificationPermission, resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setNotificationMode, setPushKey, setScheduleEnabled, setScheduleGameAutoFishingDuringRest, setScheduleMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
 		function normalizeText(text) {
 			return String(text ?? "").replace(/\s+/g, " ").trim();
 		}
@@ -3550,10 +4595,6 @@
           启动
         </button>
 
-        <div class="hint">
-          <span>快捷键：Alt + A</span>
-          <span class="hint-version">v${userscriptVersion}</span>
-        </div>
       </div>
 
       <div
@@ -3693,91 +4734,140 @@
         </details>
 
         <details class="settings-section">
-          <summary class="settings-title">自动点击间隔</summary>
-
-          <div class="number-grid">
-            <label class="field">
-              <span class="field-label">小间隔最短（秒）</span>
-              <input
-                id="short-delay-min-seconds"
-                class="input"
-                type="number"
-                min="0.1"
-                max="3600"
-                step="0.1"
-                inputmode="decimal"
-              />
-            </label>
-
-            <label class="field">
-              <span class="field-label">小间隔最长（秒）</span>
-              <input
-                id="short-delay-max-seconds"
-                class="input"
-                type="number"
-                min="0.1"
-                max="3600"
-                step="0.1"
-                inputmode="decimal"
-              />
-            </label>
-
-            <label class="field">
-              <span class="field-label">大间隔最短（秒）</span>
-              <input
-                id="long-delay-min-seconds"
-                class="input"
-                type="number"
-                min="0.1"
-                max="3600"
-                step="0.1"
-                inputmode="decimal"
-              />
-            </label>
-
-            <label class="field">
-              <span class="field-label">大间隔最长（秒）</span>
-              <input
-                id="long-delay-max-seconds"
-                class="input"
-                type="number"
-                min="0.1"
-                max="3600"
-                step="0.1"
-                inputmode="decimal"
-              />
-            </label>
-          </div>
+          <summary class="settings-title">自动买鱼饵</summary>
 
           <label class="field">
-            <span class="field-label">大间隔概率（%）</span>
-            <input
-              id="long-delay-chance-percent"
-              class="input"
-              type="number"
-              min="0"
-              max="100"
-              step="0.1"
-              inputmode="decimal"
-            />
+            <span class="field-label">常规鱼饵</span>
+            <select id="auto-bait-regular-grade" class="input">
+              ${baitGradeOptions}
+            </select>
           </label>
 
-          <div class="field-help">
-            每次自动点击前先按概率选择大间隔或小间隔，再在对应的最短与最长时间内随机等待。
+          <label class="field">
+            <span class="field-label">个人赛鱼饵</span>
+            <select id="auto-bait-personal-grade" class="input">
+              ${baitGradeOptions}
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">公会赛鱼饵</span>
+            <select id="auto-bait-guild-grade" class="input">
+              ${baitGradeOptions}
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">金风鱼饵</span>
+            <select id="auto-bait-gold-breeze-grade" class="input">
+              ${baitGradeOptions}
+            </select>
+          </label>
+
+          <div id="auto-bait-purchase-settings" class="settings-group">
+            <div class="number-grid">
+              <label class="field">
+                <span class="field-label">库存低于</span>
+                <input
+                  id="auto-bait-minimum-quantity"
+                  class="input"
+                  type="number"
+                  min="1"
+                  max="100000"
+                  step="1"
+                  inputmode="numeric"
+                />
+              </label>
+
+              <label class="field">
+                <span class="field-label">每次购买</span>
+                <select id="auto-bait-purchase-quantity" class="input">
+                  <option value="100">100 个</option>
+                  <option value="1000">1000 个</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="field-help">
+              金风天气优先使用独立鱼饵设置，默认为免费默认饵；其他天气根据当前地图是否为个人赛或公会赛地图选择鱼饵。游戏内置自动钓鱼选择“自动选择”时也遵循这些设置。付费鱼饵库存低于设置值时购买，阈值按 100 的倍数保存。
+            </div>
+          </div>
+
+          <div class="row">
+            <span class="label">上次购买</span>
+            <span id="auto-bait-last-purchased-at" class="value">暂无</span>
           </div>
         </details>
 
         <details class="settings-section">
-          <summary class="settings-title">过验证记录</summary>
+          <summary class="settings-title">监控登录情况</summary>
 
-          <div
-            id="verification-history"
-            class="verification-history"
-            aria-live="polite"
-          ></div>
+          <label class="option-row">
+            <span>启用登录情况监控</span>
+            <span class="switch">
+              <input
+                id="login-monitor-toggle"
+                type="checkbox"
+                role="switch"
+                aria-label="启用登录情况监控"
+              />
+              <span class="switch-track" aria-hidden="true"></span>
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="field-label">机器名</span>
+            <input
+              id="login-monitor-machine-name"
+              class="input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="如：服务器A"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field-label">微信机器人 Key</span>
+            <input
+              id="login-monitor-bot-key"
+              class="input"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="请输入微信机器人 key"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field-label">登录账号</span>
+            <input
+              id="login-monitor-username"
+              class="input"
+              type="text"
+              autocomplete="username"
+              placeholder="请输入登录账号"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field-label">登录密码</span>
+            <input
+              id="login-monitor-password"
+              class="input"
+              type="password"
+              autocomplete="current-password"
+              placeholder="请输入登录密码"
+            />
+          </label>
+
+          <div class="row">
+            <span class="label">监控状态</span>
+            <span id="login-monitor-status" class="value">未监控</span>
+          </div>
 
           <div class="field-help">
-            记录最近 5 次自动验证完成时间和结果，刷新页面后仍会保留。
+            开启后，脚本会检测网页是否登出；登出时自动使用上方账号密码重新登录，并通过微信机器人推送登出与登录结果。
           </div>
         </details>
 
@@ -3895,68 +4985,16 @@
         </details>
 
         <details class="settings-section">
-          <summary class="settings-title">自动买鱼饵</summary>
+          <summary class="settings-title">过验证记录</summary>
 
-          <label class="field">
-            <span class="field-label">常规鱼饵</span>
-            <select id="auto-bait-regular-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
+          <div
+            id="verification-history"
+            class="verification-history"
+            aria-live="polite"
+          ></div>
 
-          <label class="field">
-            <span class="field-label">个人赛鱼饵</span>
-            <select id="auto-bait-personal-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">公会赛鱼饵</span>
-            <select id="auto-bait-guild-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">金风鱼饵</span>
-            <select id="auto-bait-gold-breeze-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <div id="auto-bait-purchase-settings" class="settings-group">
-            <div class="number-grid">
-              <label class="field">
-                <span class="field-label">库存低于</span>
-                <input
-                  id="auto-bait-minimum-quantity"
-                  class="input"
-                  type="number"
-                  min="1"
-                  max="100000"
-                  step="1"
-                  inputmode="numeric"
-                />
-              </label>
-
-              <label class="field">
-                <span class="field-label">每次购买</span>
-                <select id="auto-bait-purchase-quantity" class="input">
-                  <option value="100">100 个</option>
-                  <option value="1000">1000 个</option>
-                </select>
-              </label>
-            </div>
-
-            <div class="field-help">
-              金风天气优先使用独立鱼饵设置，默认为免费默认饵；其他天气根据当前地图是否为个人赛或公会赛地图选择鱼饵。游戏内置自动钓鱼选择“自动选择”时也遵循这些设置。付费鱼饵库存低于设置值时购买，阈值按 100 的倍数保存。
-            </div>
-          </div>
-
-          <div class="row">
-            <span class="label">上次购买</span>
-            <span id="auto-bait-last-purchased-at" class="value">暂无</span>
+          <div class="field-help">
+            记录最近 5 次自动验证完成时间和结果，刷新页面后仍会保留。
           </div>
         </details>
 
@@ -3978,6 +5016,81 @@
 
           <div class="field-help">
             自动抛竿运行期间，连续超过该时间未收到钓鱼结果时刷新一次页面；定时休息期间不计时。
+          </div>
+        </details>
+
+        <details class="settings-section">
+          <summary class="settings-title">自动点击间隔</summary>
+
+          <div class="number-grid">
+            <label class="field">
+              <span class="field-label">小间隔最短（秒）</span>
+              <input
+                id="short-delay-min-seconds"
+                class="input"
+                type="number"
+                min="0.1"
+                max="3600"
+                step="0.1"
+                inputmode="decimal"
+              />
+            </label>
+
+            <label class="field">
+              <span class="field-label">小间隔最长（秒）</span>
+              <input
+                id="short-delay-max-seconds"
+                class="input"
+                type="number"
+                min="0.1"
+                max="3600"
+                step="0.1"
+                inputmode="decimal"
+              />
+            </label>
+
+            <label class="field">
+              <span class="field-label">大间隔最短（秒）</span>
+              <input
+                id="long-delay-min-seconds"
+                class="input"
+                type="number"
+                min="0.1"
+                max="3600"
+                step="0.1"
+                inputmode="decimal"
+              />
+            </label>
+
+            <label class="field">
+              <span class="field-label">大间隔最长（秒）</span>
+              <input
+                id="long-delay-max-seconds"
+                class="input"
+                type="number"
+                min="0.1"
+                max="3600"
+                step="0.1"
+                inputmode="decimal"
+              />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">大间隔概率（%）</span>
+            <input
+              id="long-delay-chance-percent"
+              class="input"
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              inputmode="decimal"
+            />
+          </label>
+
+          <div class="field-help">
+            每次自动点击前先按概率选择大间隔或小间隔，再在对应的最短与最长时间内随机等待。
           </div>
         </details>
 
@@ -4203,7 +5316,13 @@
 				rarityStats: shadowRoot.querySelector("#rarity-stats"),
 				resetStats: shadowRoot.querySelector("#reset-stats"),
 				collapseToggle: shadowRoot.querySelector("#collapse-toggle"),
-				toggle: shadowRoot.querySelector("#toggle")
+				toggle: shadowRoot.querySelector("#toggle"),
+				loginMonitorToggle: shadowRoot.querySelector("#login-monitor-toggle"),
+				loginMonitorMachineName: shadowRoot.querySelector("#login-monitor-machine-name"),
+				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
+				loginMonitorUsername: shadowRoot.querySelector("#login-monitor-username"),
+				loginMonitorPassword: shadowRoot.querySelector("#login-monitor-password"),
+				loginMonitorStatus: shadowRoot.querySelector("#login-monitor-status")
 			};
 			ui.pushKeyInput.value = getState().pushKey;
 			ui.pushKeyInput.addEventListener("input", (event) => {
@@ -4333,6 +5452,21 @@
 			ui.scheduleRestMinutes.addEventListener("change", (event) => {
 				setScheduleMinutes("restMinutes", event.currentTarget.value);
 			});
+			ui.loginMonitorToggle.addEventListener("change", (event) => {
+				setLoginMonitorEnabled(event.currentTarget.checked);
+			});
+			ui.loginMonitorMachineName.addEventListener("change", (event) => {
+				setLoginMonitorConfig({ machineName: event.currentTarget.value });
+			});
+			ui.loginMonitorBotKey.addEventListener("change", (event) => {
+				setLoginMonitorConfig({ botKey: event.currentTarget.value });
+			});
+			ui.loginMonitorUsername.addEventListener("change", (event) => {
+				setLoginMonitorConfig({ username: event.currentTarget.value });
+			});
+			ui.loginMonitorPassword.addEventListener("change", (event) => {
+				setLoginMonitorConfig({ password: event.currentTarget.value });
+			});
 			ui.resetStats.addEventListener("click", () => {
 				resetEarningsStats();
 			});
@@ -4356,6 +5490,9 @@
 			renderIdleReloadSettings();
 			renderPanelCollapsed();
 			renderNotificationSettings();
+			renderLoginMonitorSettings();
+			loginMonitorStatusEl = ui.loginMonitorStatus;
+			if (loginMonitorStatusEl) loginMonitorStatusEl.textContent = loginMonitorRunning ? "监控中" : "未监控";
 			renderScheduleSettings();
 			updateClickCount();
 			setPanelView(panelView);
@@ -4406,6 +5543,7 @@
 				renderIdleReloadSettings();
 				renderNotificationSettings();
 				renderScheduleSettings();
+				renderLoginMonitorSettings();
 				renderVerificationHistory();
 			}
 		}
@@ -4637,6 +5775,17 @@
 			ui.scheduleRestMinutes.value = String(scheduleSettings.restMinutes);
 			renderScheduleStatus();
 		}
+		function renderLoginMonitorSettings() {
+			if (!ui?.loginMonitorToggle) return;
+			const { loginMonitorSettings } = getState();
+			ui.loginMonitorToggle.checked = loginMonitorSettings.enabled;
+			ui.loginMonitorToggle.setAttribute("aria-checked", loginMonitorSettings.enabled ? "true" : "false");
+			ui.loginMonitorMachineName.value = loginMonitorSettings.machineName;
+			ui.loginMonitorBotKey.value = loginMonitorSettings.botKey;
+			ui.loginMonitorUsername.value = loginMonitorSettings.username;
+			ui.loginMonitorPassword.value = loginMonitorSettings.password;
+		}
+
 		function renderAutoBiomeSettings() {
 			if (!ui?.autoBiomeToggle) return;
 			const { autoBiomeCompetitionStatus, autoBiomeDailyQuestStatus, autoBiomeLastUpdatedAt, autoBiomeSettings, autoBiomeStatus } = getState();
@@ -4786,6 +5935,7 @@
 			renderScheduleStatus,
 			renderToggle,
 			renderVerificationHistory,
+			renderLoginMonitorSettings,
 			setNextDelay,
 			setStatus,
 			updateClickCount
@@ -4899,6 +6049,24 @@
 		pushKey = String(nextPushKey ?? "").trim();
 		savePushKey(pushKey);
 	}
+	function setLoginMonitorEnabled(nextEnabled) {
+		loginMonitorSettings = { ...loginMonitorSettings, enabled: Boolean(nextEnabled) };
+		saveLoginMonitorSettings(loginMonitorSettings);
+		if (loginMonitorSettings.enabled) startLoginMonitor();
+		else stopLoginMonitor();
+		panel?.renderLoginMonitorSettings();
+	}
+	function setLoginMonitorConfig(patch) {
+		const next = { ...loginMonitorSettings };
+		if ("machineName" in patch) next.machineName = String(patch.machineName ?? "").trim();
+		if ("botKey" in patch) next.botKey = String(patch.botKey ?? "").trim();
+		if ("username" in patch) next.username = String(patch.username ?? "").trim();
+		if ("password" in patch) next.password = String(patch.password ?? "");
+		loginMonitorSettings = next;
+		saveLoginMonitorSettings(loginMonitorSettings);
+		panel?.renderLoginMonitorSettings();
+	}
+
 	function recordVerificationResult(entry) {
 		verificationHistory = addVerificationHistoryEntry(verificationHistory, entry);
 		saveVerificationHistory(verificationHistory);
@@ -4929,6 +6097,7 @@
 			autoBossSettings,
 			notificationMode,
 			pushKey,
+			loginMonitorSettings,
 			scheduleSettings,
 			...autoBiome?.getSnapshot() ?? {
 				autoBiomeCompetitionBiomes: {
@@ -5006,8 +6175,8 @@
 		return null;
 	}
 	function dispatchPointerEvent(target, type, options) {
-		if (typeof window.PointerEvent !== "function") return;
-		target.dispatchEvent(new window.PointerEvent(type, {
+		if (typeof unsafeWindow.PointerEvent !== "function") return;
+		target.dispatchEvent(new unsafeWindow.PointerEvent(type, {
 			bubbles: true,
 			cancelable: true,
 			composed: true,
@@ -5022,11 +6191,11 @@
 		}));
 	}
 	function dispatchMouseEvent(target, type, options) {
-		target.dispatchEvent(new window.MouseEvent(type, {
+		target.dispatchEvent(new unsafeWindow.MouseEvent(type, {
 			bubbles: true,
 			cancelable: true,
 			composed: true,
-			view: window,
+			view: unsafeWindow,
 			button: 0,
 			...options
 		}));
@@ -5058,8 +6227,8 @@
 		const baseOptions = {
 			clientX,
 			clientY,
-			screenX: window.screenX + clientX,
-			screenY: window.screenY + clientY
+			screenX: unsafeWindow.screenX + clientX,
+			screenY: unsafeWindow.screenY + clientY
 		};
 		dispatchPointerEvent(eventTarget, "pointerover", {
 			...baseOptions,
@@ -5391,15 +6560,6 @@
 		panel.renderScheduleSettings();
 		panel.renderAutoBaitSettings();
 	}
-	document.addEventListener("keydown", (event) => {
-		const target = event.target;
-		if (target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"))) return;
-		if (event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyA") {
-			event.preventDefault();
-			event.stopPropagation();
-			setEnabled(!enabled);
-		}
-	}, true);
 	function initialize() {
 		schedule = createScheduleController({
 			getCaptcha() {
@@ -5479,7 +6639,9 @@
 				setPushKey,
 				setScheduleEnabled,
 				setScheduleGameAutoFishingDuringRest,
-				setScheduleMinutes
+				setScheduleMinutes,
+				setLoginMonitorEnabled,
+				setLoginMonitorConfig
 			},
 			formatScheduleDuration,
 			getState: getPanelState
@@ -5557,7 +6719,8 @@
 		}
 		setEnabled(enabled, { preserveSchedule: enabled && scheduleSettings.enabled });
 		autoBoss.start();
-		console.info("[自动抛竿] 脚本已加载，使用右下角按钮或 Alt + A 控制。");
+		if (loginMonitorSettings.enabled) startLoginMonitor();
+		console.info("[自动抛竿] 脚本已加载，使用右下角按钮控制。");
 	}
 	if (document.body) initialize();
 	else document.addEventListener("DOMContentLoaded", initialize, { once: true });
