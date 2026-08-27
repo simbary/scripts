@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.02
+// @version      4.05
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @homepageURL  https://github.com/abangZ/tampermonkey-scripts
@@ -1115,6 +1115,7 @@
 	var LOGIN_MONITOR_USERNAME_STORAGE_KEY = "arcane-angler-login-monitor-username-v1";
 	var LOGIN_MONITOR_PASSWORD_STORAGE_KEY = "arcane-angler-login-monitor-password-v1";
 	var LOGIN_MONITOR_LOGOUT_NOTIFIED_STORAGE_KEY = "arcane-angler-login-monitor-logout-notified-v1";
+	var LOGIN_MONITOR_RARE_DROP_NOTIFY_STORAGE_KEY = "arcane-angler-rare-drop-notify-enabled-v1";
 	var PANEL_ID = "arcane-angler-cast-panel-host";
 	var STAFF_QUESTION_TEXT = "Staff Question";
 	var HUMAN_VERIFICATION_MESSAGE = "Arcane Angler 出现需要处理的验证，自动抛竿已停止";
@@ -1171,6 +1172,17 @@
 			label: "装备",
 			tone: "gear"
 		}
+	};
+	var GEAR_SLOT_DISPLAY = {
+		head: "头部",
+		torso: "上衣",
+		legs: "腿部",
+		boots: "鞋子",
+		gloves: "手套",
+		amulet: "护身符",
+		charm: "符咒",
+		ring_1: "戒指1",
+		ring_2: "戒指2"
 	};
 	var BOSS_STAT_LABELS = {
 		strength: "力量",
@@ -3370,11 +3382,12 @@
 				machineName: localStorage.getItem(LOGIN_MONITOR_MACHINE_NAME_STORAGE_KEY)?.trim() ?? "",
 				botKey: localStorage.getItem(LOGIN_MONITOR_BOT_KEY_STORAGE_KEY)?.trim() ?? "",
 				username: localStorage.getItem(LOGIN_MONITOR_USERNAME_STORAGE_KEY)?.trim() ?? "",
-				password: localStorage.getItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY) ?? ""
+				password: localStorage.getItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY) ?? "",
+				rareDropNotifyEnabled: localStorage.getItem(LOGIN_MONITOR_RARE_DROP_NOTIFY_STORAGE_KEY) === "1"
 			};
 		} catch (error) {
 			console.warn("[监控登录] 无法读取设置：", error);
-			return { enabled: false, machineName: "", botKey: "", username: "", password: "" };
+			return { enabled: false, machineName: "", botKey: "", username: "", password: "", rareDropNotifyEnabled: false };
 		}
 	}
 	function saveLoginMonitorSettings(settings) {
@@ -3388,6 +3401,7 @@
 			else localStorage.removeItem(LOGIN_MONITOR_USERNAME_STORAGE_KEY);
 			if (settings.password) localStorage.setItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY, settings.password);
 			else localStorage.removeItem(LOGIN_MONITOR_PASSWORD_STORAGE_KEY);
+			localStorage.setItem(LOGIN_MONITOR_RARE_DROP_NOTIFY_STORAGE_KEY, settings.rareDropNotifyEnabled ? "1" : "0");
 		} catch (error) {
 			console.warn("[监控登录] 无法保存设置：", error);
 		}
@@ -4800,7 +4814,7 @@
         </details>
 
         <details class="settings-section">
-          <summary class="settings-title">监控登录情况</summary>
+          <summary class="settings-title">实时监控</summary>
 
           <label class="option-row">
             <span>启用登录情况监控</span>
@@ -4810,6 +4824,19 @@
                 type="checkbox"
                 role="switch"
                 aria-label="启用登录情况监控"
+              />
+              <span class="switch-track" aria-hidden="true"></span>
+            </span>
+          </label>
+
+          <label class="option-row">
+            <span>稀有掉落通知</span>
+            <span class="switch">
+              <input
+                id="login-monitor-rare-drop-notify-toggle"
+                type="checkbox"
+                role="switch"
+                aria-label="稀有掉落通知"
               />
               <span class="switch-track" aria-hidden="true"></span>
             </span>
@@ -5322,7 +5349,8 @@
 				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
 				loginMonitorUsername: shadowRoot.querySelector("#login-monitor-username"),
 				loginMonitorPassword: shadowRoot.querySelector("#login-monitor-password"),
-				loginMonitorStatus: shadowRoot.querySelector("#login-monitor-status")
+				loginMonitorStatus: shadowRoot.querySelector("#login-monitor-status"),
+				loginMonitorRareDropNotifyToggle: shadowRoot.querySelector("#login-monitor-rare-drop-notify-toggle")
 			};
 			ui.pushKeyInput.value = getState().pushKey;
 			ui.pushKeyInput.addEventListener("input", (event) => {
@@ -5466,6 +5494,9 @@
 			});
 			ui.loginMonitorPassword.addEventListener("change", (event) => {
 				setLoginMonitorConfig({ password: event.currentTarget.value });
+			});
+			ui.loginMonitorRareDropNotifyToggle.addEventListener("change", (event) => {
+				setLoginMonitorConfig({ rareDropNotifyEnabled: event.currentTarget.checked });
 			});
 			ui.resetStats.addEventListener("click", () => {
 				resetEarningsStats();
@@ -5784,6 +5815,8 @@
 			ui.loginMonitorBotKey.value = loginMonitorSettings.botKey;
 			ui.loginMonitorUsername.value = loginMonitorSettings.username;
 			ui.loginMonitorPassword.value = loginMonitorSettings.password;
+			ui.loginMonitorRareDropNotifyToggle.checked = loginMonitorSettings.rareDropNotifyEnabled;
+			ui.loginMonitorRareDropNotifyToggle.setAttribute("aria-checked", loginMonitorSettings.rareDropNotifyEnabled ? "true" : "false");
 		}
 
 		function renderAutoBiomeSettings() {
@@ -5989,8 +6022,35 @@
 		if (autoBiome) autoBiome.handleWeatherResponse(response);
 		else pendingWeatherResponses.set(`${response.source ?? "fetch"}:${response.pathname}`, response);
 	}
+	function notifyNoteworthyCatch(result) {
+		const botKey = loginMonitorSettings.botKey;
+		if (!botKey || !loginMonitorSettings.rareDropNotifyEnabled) return;
+		const fishRarity = String(result.rarity ?? "").trim().toLowerCase();
+		const gearRarity = String(result.gear?.rarity ?? "").trim().toLowerCase();
+		const isNoteworthyFish = Boolean(result.fish?.name) && (fishRarity === "exotic" || fishRarity === "arcane");
+		const isNoteworthyGear = Boolean(result.gear) && (gearRarity === "exotic" || gearRarity === "arcane");
+		if (!isNoteworthyFish && !isNoteworthyGear) return;
+		const rarity = isNoteworthyFish ? (fishRarity === "exotic" ? "奇异" : "奥术") : (gearRarity === "exotic" ? "奇异" : "奥术");
+		const name = isNoteworthyFish ? String(result.fish?.name ?? "").trim() : String(result.gear?.name ?? "").trim();
+		const verb = isNoteworthyFish ? "钓到" : "获得";
+		const kind = isNoteworthyFish ? "鱼" : "装备";
+		let detail = "";
+		if (isNoteworthyFish) {
+			const biomeId = String(result.currentBiome ?? "").trim();
+			if (biomeId) detail = `（B${biomeId}）`;
+		} else {
+			const slot = String(result.gear?.slot ?? "").trim();
+			const slotLabel = GEAR_SLOT_DISPLAY[slot] ?? slot;
+			if (slotLabel) detail = `（${slotLabel}）`;
+		}
+		const message = formatBotMessage(`🎣 ${verb}${rarity}${kind}：${name || "未知"}${detail}`);
+		sendWxBot(botKey, message);
+		console.log(`[稀有通知] ${message}`);
+	}
+
 	function recordCastResult(result, { pathname } = {}) {
 		fishingActivityWatchdog.markFishing();
+		notifyNoteworthyCatch(result);
 		earningsStats = updateEarningsStats(earningsStats, result, getCastEarningsContext(result));
 		saveEarningsStats(earningsStats);
 		panel?.renderEarningsStats();
@@ -6062,6 +6122,7 @@
 		if ("botKey" in patch) next.botKey = String(patch.botKey ?? "").trim();
 		if ("username" in patch) next.username = String(patch.username ?? "").trim();
 		if ("password" in patch) next.password = String(patch.password ?? "");
+		if ("rareDropNotifyEnabled" in patch) next.rareDropNotifyEnabled = Boolean(patch.rareDropNotifyEnabled);
 		loginMonitorSettings = next;
 		saveLoginMonitorSettings(loginMonitorSettings);
 		panel?.renderLoginMonitorSettings();
