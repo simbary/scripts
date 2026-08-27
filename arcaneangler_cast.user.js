@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.07
+// @version      4.09
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
@@ -4527,6 +4527,15 @@
           </span>
         </label>
 
+        <button
+          id="export-fish-image"
+          class="toggle"
+          type="button"
+          style="background: #38a169;"
+        >
+          导出换鱼助手
+        </button>
+
         <button id="toggle" class="toggle" type="button">
           启动
         </button>
@@ -5111,6 +5120,7 @@
 				resetStats: shadowRoot.querySelector("#reset-stats"),
 				collapseToggle: shadowRoot.querySelector("#collapse-toggle"),
 				toggle: shadowRoot.querySelector("#toggle"),
+				exportFishImage: shadowRoot.querySelector("#export-fish-image"),
 				loginMonitorToggle: shadowRoot.querySelector("#login-monitor-toggle"),
 				loginMonitorMachineName: shadowRoot.querySelector("#login-monitor-machine-name"),
 				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
@@ -5124,6 +5134,15 @@
 			});
 			ui.toggle.addEventListener("click", () => {
 				setEnabled(!getState().enabled);
+			});
+			ui.exportFishImage.addEventListener("click", () => {
+				if (ui.exportFishImage.disabled) return;
+				ui.exportFishImage.disabled = true;
+				ui.exportFishImage.textContent = "正在导出...";
+				exportFishImageData().finally(() => {
+					ui.exportFishImage.disabled = false;
+					ui.exportFishImage.textContent = "导出换鱼助手";
+				});
 			});
 			ui.gameAutoFishingToggle.addEventListener("change", (event) => {
 				setGameAutoFishingEnabled(event.currentTarget.checked);
@@ -6254,6 +6273,377 @@
 		saveIdleReloadSettings(idleReloadSettings);
 		fishingActivityWatchdog.markFishing();
 		panel.renderIdleReloadSettings();
+	}
+	var exportFishBiomeMap = {};
+
+	var EXPORT_FISH_RARITY_ORDER = { 'Exotic': 8, 'Arcane': 9 };
+	var EXPORT_FISH_RARITY_ZH = { 'Exotic': '奇异', 'Arcane': '奥术' };
+	var EXPORT_FISH_TARGET_RARITIES = ['Exotic', 'Arcane'];
+
+	function exportFishBuildBiomeMap() {
+		const map = {};
+		if (!unsafeWindow.BIOMES) return map;
+		for (const [id, biome] of Object.entries(unsafeWindow.BIOMES)) {
+			if (biome.fish) {
+				for (const rarity in biome.fish) {
+					biome.fish[rarity].forEach(fish => {
+						map[fish.name] = { biomeId: parseInt(id), biomeName: biome.name };
+					});
+				}
+			}
+		}
+		return map;
+	}
+
+	function exportFishGetChineseName(englishName) {
+		if (unsafeWindow.cnItems && unsafeWindow.cnItems[englishName]) {
+			const trans = unsafeWindow.cnItems[englishName];
+			return Array.isArray(trans) ? trans[0] : trans;
+		}
+		return englishName;
+	}
+
+	function exportFishParseInventory(data) {
+		const inventory = [];
+		const fishList = data.inventory || data.fish || (Array.isArray(data) ? data : []);
+		fishList.forEach(item => {
+			const name = item.name || item.fishName;
+			if (!name) return;
+			const rarity = item.rarity || 'Common';
+			if (!EXPORT_FISH_TARGET_RARITIES.includes(rarity)) return;
+			const biomeInfo = exportFishBiomeMap[name] || { biomeId: 0 };
+			inventory.push({
+				name_zh: exportFishGetChineseName(name),
+				quantity: item.quantity || item.count || 1,
+				rarity: rarity,
+				biomeId: biomeInfo.biomeId,
+				biomeCode: biomeInfo.biomeId > 0 ? `B${biomeInfo.biomeId}` : '?'
+			});
+		});
+		inventory.sort((a, b) => (a.biomeId - b.biomeId) || (EXPORT_FISH_RARITY_ORDER[a.rarity] - EXPORT_FISH_RARITY_ORDER[b.rarity]));
+		return inventory;
+	}
+
+	function exportFishParseMastery(allBiomesData) {
+		const masteryInfo = [];
+		const seen = new Set();
+		allBiomesData.forEach(biomeData => {
+			(biomeData.targetFish || []).forEach(fish => {
+				const name = fish.name || fish.fishName;
+				if (!name) return;
+				const rarity = fish.rarity || 'Unknown';
+				if (!EXPORT_FISH_TARGET_RARITIES.includes(rarity)) return;
+				const key = `${name}_${biomeData.biomeId}`;
+				if (seen.has(key)) return;
+				seen.add(key);
+				const sacrificed = biomeData.progress[name] || 0;
+				const required = fish.required || fish.count || fish.needed || fish.total || 1;
+				const remaining = Math.max(0, required - sacrificed);
+				masteryInfo.push({
+					name_zh: exportFishGetChineseName(name),
+					rarity: rarity,
+					biomeId: biomeData.biomeId,
+					biomeCode: `B${biomeData.biomeId}`,
+					sacrificed: sacrificed,
+					remaining: remaining,
+					required: required
+				});
+			});
+		});
+		masteryInfo.sort((a, b) => (a.biomeId - b.biomeId) || (EXPORT_FISH_RARITY_ORDER[a.rarity] - EXPORT_FISH_RARITY_ORDER[b.rarity]));
+		return masteryInfo;
+	}
+
+	function exportFishPrepareTableData(inventory, mastery) {
+		const invByBiome = {};
+		const mastByBiome = {};
+
+		inventory.forEach(fish => {
+			const biome = fish.biomeCode;
+			const rarity = fish.rarity;
+			if (!invByBiome[biome]) invByBiome[biome] = {};
+			if (!invByBiome[biome][rarity]) invByBiome[biome][rarity] = [];
+			invByBiome[biome][rarity].push({ name: fish.name_zh, qty: fish.quantity });
+		});
+
+		mastery.forEach(fish => {
+			if (fish.remaining <= 0) return;
+			const biome = fish.biomeCode;
+			const rarity = fish.rarity;
+			if (!mastByBiome[biome]) mastByBiome[biome] = {};
+			if (!mastByBiome[biome][rarity]) mastByBiome[biome][rarity] = [];
+			mastByBiome[biome][rarity].push({ name: fish.name_zh, qty: fish.remaining });
+		});
+
+		const allBiomes = [...new Set([...Object.keys(invByBiome), ...Object.keys(mastByBiome)])];
+		allBiomes.sort((a, b) => {
+			const numA = parseInt((a || '').replace('B', '')) || 0;
+			const numB = parseInt((b || '').replace('B', '')) || 0;
+			return numA - numB;
+		});
+
+		return { invByBiome, mastByBiome, allBiomes };
+	}
+
+	function exportFishGenerateImage(tableData, username, userId) {
+		const { invByBiome, mastByBiome, allBiomes } = tableData;
+
+		// 计算每个区域的行数
+		const biomeRows = allBiomes.map(biome => {
+			const exoticInv = invByBiome[biome]?.['Exotic'] || [];
+			const exoticMast = mastByBiome[biome]?.['Exotic'] || [];
+			const arcaneInv = invByBiome[biome]?.['Arcane'] || [];
+			const arcaneMast = mastByBiome[biome]?.['Arcane'] || [];
+			return Math.max(exoticInv.length, exoticMast.length, arcaneInv.length, arcaneMast.length, 1);
+		});
+
+		// 配置
+		const config = {
+			cellPadding: 8,
+			cellHeight: 28,
+			headerHeight: 70,
+			colWidths: [60, 180, 180, 180, 180], // 区域、奇异-持有、奇异-需要、奥术-持有、奥术-需要
+			fontSize: 13,
+			headerFontSize: 15,
+			titleFontSize: 18,
+			colors: {
+				bg: '#ffffff',
+				headerBg: '#4a5568',
+				headerText: '#ffffff',
+				subHeaderBg: '#e2e8f0',
+				subHeaderText: '#2d3748',
+				regionBg: '#f7fafc',
+				text: '#1a202c',
+				border: '#cbd5e0',
+				regionBorder: '#2d3748',
+				titleBg: '#2d3748',
+				titleText: '#ffffff'
+			}
+		};
+
+		const totalWidth = config.colWidths.reduce((a, b) => a + b, 0);
+		const totalDataHeight = biomeRows.reduce((a, b) => a + b * config.cellHeight, 0);
+		const titleHeight = 40;
+		const totalHeight = titleHeight + config.headerHeight + totalDataHeight + 20;
+
+		// 创建 canvas
+		const canvas = document.createElement('canvas');
+		const dpr = 2; // 高清
+		canvas.width = totalWidth * dpr;
+		canvas.height = totalHeight * dpr;
+		const ctx = canvas.getContext('2d');
+		ctx.scale(dpr, dpr);
+
+		// 背景
+		ctx.fillStyle = config.colors.bg;
+		ctx.fillRect(0, 0, totalWidth, totalHeight);
+
+		// 标题栏
+		ctx.fillStyle = config.colors.titleBg;
+		ctx.fillRect(0, 0, totalWidth, titleHeight);
+		ctx.fillStyle = config.colors.titleText;
+		ctx.font = `bold ${config.titleFontSize}px "Microsoft YaHei", sans-serif`;
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillText(`🎣 Arcane Angler 换鱼表格 - ${username} (${userId})`, totalWidth / 2, titleHeight / 2);
+
+		let y = titleHeight;
+
+		// 第一行表头：区域 | 奇异 | 奥术
+		const h1 = config.headerHeight / 2;
+		ctx.fillStyle = config.colors.headerBg;
+		ctx.fillRect(0, y, totalWidth, h1);
+
+		ctx.fillStyle = config.colors.headerText;
+		ctx.font = `bold ${config.headerFontSize}px "Microsoft YaHei", sans-serif`;
+		ctx.textAlign = 'center';
+
+		// 区域
+		ctx.fillText('区域', config.colWidths[0] / 2, y + h1 / 2);
+		// 奇异（合并两列）
+		ctx.fillText('奇异', config.colWidths[0] + config.colWidths[1] + config.colWidths[2] / 2, y + h1 / 2);
+		// 奥术（合并两列）
+		ctx.fillText('奥术', config.colWidths[0] + config.colWidths[1] + config.colWidths[2] + config.colWidths[3] + config.colWidths[4] / 2, y + h1 / 2);
+
+		y += h1;
+
+		// 第二行表头：持有 | 需要 | 持有 | 需要
+		ctx.fillStyle = config.colors.subHeaderBg;
+		ctx.fillRect(0, y, totalWidth, h1);
+
+		ctx.fillStyle = config.colors.subHeaderText;
+		ctx.font = `bold ${config.fontSize}px "Microsoft YaHei", sans-serif`;
+
+		let x = config.colWidths[0];
+		for (let c = 1; c <= 4; c++) {
+			ctx.fillText(c % 2 === 1 ? '持有' : '需要', x + config.colWidths[c] / 2, y + h1 / 2);
+			x += config.colWidths[c];
+		}
+
+		y += h1;
+
+		// 绘制数据行
+		ctx.font = `${config.fontSize}px "Microsoft YaHei", sans-serif`;
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'middle';
+
+		allBiomes.forEach((biome, biomeIdx) => {
+			const rows = biomeRows[biomeIdx];
+			const regionHeight = rows * config.cellHeight;
+
+			const exoticInv = invByBiome[biome]?.['Exotic'] || [];
+			const exoticMast = mastByBiome[biome]?.['Exotic'] || [];
+			const arcaneInv = invByBiome[biome]?.['Arcane'] || [];
+			const arcaneMast = mastByBiome[biome]?.['Arcane'] || [];
+
+			// 区域背景
+			ctx.fillStyle = config.colors.regionBg;
+			ctx.fillRect(0, y, config.colWidths[0], regionHeight);
+
+			// 区域文字（居中）
+			ctx.fillStyle = config.colors.text;
+			ctx.font = `bold ${config.fontSize + 2}px "Microsoft YaHei", sans-serif`;
+			ctx.textAlign = 'center';
+			ctx.fillText(biome, config.colWidths[0] / 2, y + regionHeight / 2);
+			ctx.font = `${config.fontSize}px "Microsoft YaHei", sans-serif`;
+			ctx.textAlign = 'left';
+
+			// 数据行
+			for (let i = 0; i < rows; i++) {
+				const rowY = y + i * config.cellHeight;
+				const textY = rowY + config.cellHeight / 2;
+
+				// 奇异-持有
+				if (i < exoticInv.length) {
+					const fish = exoticInv[i];
+					ctx.fillStyle = config.colors.text;
+					ctx.fillText(`${fish.name} ×${fish.qty}`, config.colWidths[0] + config.cellPadding, textY);
+				}
+
+				// 奇异-需要
+				if (i < exoticMast.length) {
+					const fish = exoticMast[i];
+					ctx.fillStyle = config.colors.text;
+					ctx.fillText(`${fish.name} ×${fish.qty}`, config.colWidths[0] + config.colWidths[1] + config.cellPadding, textY);
+				}
+
+				// 奥术-持有
+				if (i < arcaneInv.length) {
+					const fish = arcaneInv[i];
+					ctx.fillStyle = config.colors.text;
+					ctx.fillText(`${fish.name} ×${fish.qty}`, config.colWidths[0] + config.colWidths[1] + config.colWidths[2] + config.cellPadding, textY);
+				}
+
+				// 奥术-需要
+				if (i < arcaneMast.length) {
+					const fish = arcaneMast[i];
+					ctx.fillStyle = config.colors.text;
+					ctx.fillText(`${fish.name} ×${fish.qty}`, config.colWidths[0] + config.colWidths[1] + config.colWidths[2] + config.colWidths[3] + config.cellPadding, textY);
+				}
+
+				// 行内细边框
+				ctx.strokeStyle = config.colors.border;
+				ctx.lineWidth = 0.5;
+				for (let c = 0; c < 5; c++) {
+					let cx = 0;
+					for (let k = 0; k <= c; k++) cx += config.colWidths[k];
+					ctx.beginPath();
+					ctx.moveTo(cx, rowY);
+					ctx.lineTo(cx, rowY + config.cellHeight);
+					ctx.stroke();
+				}
+				ctx.beginPath();
+				ctx.moveTo(0, rowY + config.cellHeight);
+				ctx.lineTo(totalWidth, rowY + config.cellHeight);
+				ctx.stroke();
+			}
+
+			// 区域粗边框（顶部和底部）
+			ctx.strokeStyle = config.colors.regionBorder;
+			ctx.lineWidth = 2;
+			// 顶部
+			ctx.beginPath();
+			ctx.moveTo(0, y);
+			ctx.lineTo(totalWidth, y);
+			ctx.stroke();
+			// 底部
+			ctx.beginPath();
+			ctx.moveTo(0, y + regionHeight);
+			ctx.lineTo(totalWidth, y + regionHeight);
+			ctx.stroke();
+
+			// 区域左右粗边框
+			ctx.beginPath();
+			ctx.moveTo(0, y);
+			ctx.lineTo(0, y + regionHeight);
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.moveTo(totalWidth, y);
+			ctx.lineTo(totalWidth, y + regionHeight);
+			ctx.stroke();
+
+			y += regionHeight;
+		});
+
+		// 下载图片
+		canvas.toBlob((blob) => {
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `Arcane_Angler_换鱼表格_${username.replace(/\s+/g, "_")}_${userId}_${new Date().toISOString().slice(0, 10)}.png`;
+			a.click();
+			URL.revokeObjectURL(url);
+		}, 'image/png');
+
+	}
+	async function exportFishImageData() {
+		exportFishBiomeMap = exportFishBuildBiomeMap();
+		try {
+			let username = "玩家";
+			let userId = "";
+			try {
+				const profileResponse = await window.fetch("/api/profile/me", { credentials: "include" });
+				if (profileResponse.ok) {
+					const profileData = await profileResponse.json();
+					const profile = profileData?.profile;
+					if (profile) {
+						username = String(profile.profile_username ?? "").trim() || "玩家";
+						userId = String(profile.id ?? "");
+					}
+				}
+			} catch (e) {}
+			let playerData = gameState.getPlayerSnapshot();
+			if (!playerData) {
+				const savedData = localStorage.getItem("arcaneAnglerSave");
+				if (savedData) try { playerData = JSON.parse(savedData); } catch (e) {}
+			}
+			const inventory = playerData ? exportFishParseInventory(playerData) : [];
+			const unlockedBiomes = playerData?.unlockedBiomes || [];
+			const allBiomesMasteryData = [];
+			const API_BASE = "https://arcaneangler.com/api";
+			for (const biomeId of unlockedBiomes) {
+				try {
+					const response = await window.fetch(`${API_BASE}/mastery/biome/${biomeId}`, { credentials: "include" });
+					if (response.ok) {
+						const data = await response.json();
+						allBiomesMasteryData.push({
+							biomeId,
+							biomeName: data.biomeName || "Unknown",
+							masteryLevel: data.masteryLevel || 0,
+							targetFish: data.targetFish || [],
+							progress: data.progress || {}
+						});
+					}
+				} catch (e) {}
+			}
+			const mastery = exportFishParseMastery(allBiomesMasteryData);
+			const tableData = exportFishPrepareTableData(inventory, mastery);
+			if (!userId && playerData?.userId != null) userId = String(playerData.userId);
+			exportFishGenerateImage(tableData, username, userId);
+		} catch (e) {
+			console.error("[换鱼助手] 导出失败:", e);
+			panel?.setStatus("导出失败：" + e.message);
+		}
 	}
 	function initialize() {
 		schedule = createScheduleController({
