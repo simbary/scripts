@@ -1,15 +1,13 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.05
+// @version      4.07
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
-// @homepageURL  https://github.com/abangZ/tampermonkey-scripts
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
 // @updateURL    https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
 // @match        https://arcaneangler.com/*
 // @match        https://www.arcaneangler.com/*
-// @match        http://103.217.186.170:3000/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1098,8 +1096,6 @@
 	var CLICK_DELAY_SETTINGS_STORAGE_KEY = "arcane-angler-click-delay-settings-v1";
 	var CAPTCHA_BYPASS_STORAGE_KEY = "arcane-angler-captcha-bypass-enabled-v1";
 	var VERIFICATION_HISTORY_STORAGE_KEY = "arcane-angler-verification-history-v1";
-	var PUSH_KEY_STORAGE_KEY = "arcane-angler-push-key-v1";
-	var NOTIFICATION_MODE_STORAGE_KEY = "arcane-angler-notification-mode-v1";
 	var SCHEDULE_SETTINGS_STORAGE_KEY = "arcane-angler-schedule-settings-v1";
 	var SCHEDULE_RUNTIME_STORAGE_KEY = "arcane-angler-schedule-runtime-v1";
 	var GAME_AUTO_FISHING_SETTINGS_STORAGE_KEY = "arcane-angler-game-auto-fishing-settings-v1";
@@ -2865,58 +2861,13 @@
 			console.warn("[游戏状态] 无法读取游戏状态响应：", error);
 		}
 	}
-	async function sendHumanVerificationNotification({ notificationMode, pushKey }) {
-		if (notificationMode === "browser") {
-			sendBrowserHumanVerificationNotification();
+	function sendWeChatHumanVerificationNotification() {
+		const botKey = loginMonitorSettings.botKey;
+		if (!botKey) {
+			console.info("[自动抛竿] 未配置微信机器人 Key，跳过验证通知。");
 			return;
 		}
-		await sendServerHumanVerificationNotification(pushKey);
-	}
-	async function sendServerHumanVerificationNotification(pushKey) {
-		const currentPushKey = pushKey.trim();
-		if (!currentPushKey) {
-			console.info("[自动抛竿] 未设置消息推送 Key，跳过验证通知。可前往 https://sct.ftqq.com/ 获取 SendKey。");
-			return;
-		}
-		const url = `https://sctapi.ftqq.com/${encodeURIComponent(currentPushKey)}.send?title=${encodeURIComponent(HUMAN_VERIFICATION_MESSAGE)}`;
-		try {
-			const response = await window.fetch(url);
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			console.info("[自动抛竿] 验证通知已发送。");
-		} catch (error) {
-			console.warn("[自动抛竿] 验证通知发送失败：", error);
-		}
-	}
-	function sendBrowserHumanVerificationNotification() {
-		if (typeof window.Notification !== "function") {
-			console.warn("[自动抛竿] 当前浏览器不支持系统通知。");
-			return;
-		}
-		if (window.Notification.permission !== "granted") {
-			console.warn("[自动抛竿] 浏览器通知尚未授权，跳过验证通知。");
-			return;
-		}
-		try {
-			const notification = new window.Notification("Arcane Angler 验证提醒", {
-				body: HUMAN_VERIFICATION_MESSAGE,
-				tag: "arcane-angler-human-verification"
-			});
-			notification.onclick = () => {
-				window.focus();
-				notification.close();
-			};
-			console.info("[自动抛竿] 浏览器验证通知已发送。");
-		} catch (error) {
-			console.warn("[自动抛竿] 浏览器验证通知发送失败：", error);
-		}
-	}
-	async function requestBrowserNotificationPermission$1() {
-		if (typeof window.Notification !== "function") return;
-		try {
-			await window.Notification.requestPermission();
-		} catch (error) {
-			console.warn("[自动抛竿] 请求浏览器通知权限失败：", error);
-		}
+		sendWxBot(botKey, formatBotMessage(`⚠️ ${HUMAN_VERIFICATION_MESSAGE}`));
 	}
 	function formatScheduleDuration(milliseconds) {
 		const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1e3));
@@ -3131,35 +3082,6 @@
 			console.warn("[自动过验证] 无法保存验证记录：", error);
 		}
 	}
-	function loadPushKey() {
-		try {
-			return localStorage.getItem("arcane-angler-push-key-v1")?.trim() ?? "";
-		} catch {
-			return "";
-		}
-	}
-	function savePushKey(value) {
-		try {
-			if (value) localStorage.setItem(PUSH_KEY_STORAGE_KEY, value);
-			else localStorage.removeItem(PUSH_KEY_STORAGE_KEY);
-		} catch (error) {
-			console.warn("[自动抛竿] 无法保存消息推送 Key：", error);
-		}
-	}
-	function loadNotificationMode() {
-		try {
-			return localStorage.getItem("arcane-angler-notification-mode-v1") === "browser" ? "browser" : "server";
-		} catch {
-			return "server";
-		}
-	}
-	function saveNotificationMode(value) {
-		try {
-			localStorage.setItem(NOTIFICATION_MODE_STORAGE_KEY, value);
-		} catch (error) {
-			console.warn("[自动抛竿] 无法保存通知方式：", error);
-		}
-	}
 	function normalizeAutoBiomeWeight(value, fallback = 5) {
 		const weight = Number(value);
 		return AUTO_BIOME_WEIGHTS.includes(weight) ? weight : fallback;
@@ -3309,8 +3231,8 @@
 			const savedSettings = JSON.parse(localStorage.getItem(SCHEDULE_SETTINGS_STORAGE_KEY));
 			if (!savedSettings || typeof savedSettings !== "object") return defaults;
 			return {
-				enabled: savedSettings.enabled === true,
-				gameAutoFishingDuringRest: savedSettings.gameAutoFishingDuringRest === true,
+				enabled: false,
+				gameAutoFishingDuringRest: false,
 				workMinutes: normalizeScheduleMinutes(savedSettings.workMinutes, defaults.workMinutes),
 				restMinutes: normalizeScheduleMinutes(savedSettings.restMinutes, defaults.restMinutes)
 			};
@@ -4395,7 +4317,7 @@
 		setLoginMonitorStatus("未监控");
 		console.log("[监控登录] 监控已关闭");
 	}
-	function createPanelController({ actions, formatScheduleDuration, getState }) {
+	function createPanelController({ actions, getState }) {
 		let panelCollapsed = loadPanelCollapsed();
 		let panelView = "control";
 		let earningsBiomeFilter = "current";
@@ -4404,7 +4326,7 @@
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
 		let ui = null;
-		const { requestBrowserNotificationPermission, resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setNotificationMode, setPushKey, setScheduleEnabled, setScheduleGameAutoFishingDuringRest, setScheduleMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
+		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
 		function normalizeText(text) {
 			return String(text ?? "").replace(/\s+/g, " ").trim();
 		}
@@ -5121,148 +5043,6 @@
           </div>
         </details>
 
-        <details class="settings-section">
-          <summary class="settings-title">消息通知</summary>
-
-          <div
-            class="choice-list"
-            role="radiogroup"
-            aria-label="消息通知方式"
-          >
-            <label class="choice-option">
-              <input
-                type="radio"
-                name="notification-mode"
-                value="server"
-              />
-              <span>Server酱</span>
-            </label>
-            <label class="choice-option">
-              <input
-                type="radio"
-                name="notification-mode"
-                value="browser"
-              />
-              <span>浏览器通知</span>
-            </label>
-          </div>
-
-          <div id="server-notification-settings" class="settings-group">
-            <label class="field">
-              <span class="field-label">消息推送 Key</span>
-              <input
-                id="push-key"
-                class="input"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="Server酱 SendKey"
-              />
-            </label>
-
-            <div id="push-key-help" class="field-help">
-              未填写 Key。请前往
-              <a
-                href="https://sct.ftqq.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >Server酱官网</a>，登录后按页面提示获取 SendKey。
-            </div>
-            <div class="field-help">
-              Server酱每日免费额度仅 5 条，推荐优先使用浏览器通知。
-            </div>
-          </div>
-
-          <div
-            id="browser-notification-settings"
-            class="settings-group"
-            hidden
-          >
-            <div class="row">
-              <span class="label">通知权限</span>
-              <span
-                id="browser-notification-permission"
-                class="value"
-              >检查中</span>
-            </div>
-            <button
-              id="browser-notification-permission-button"
-              class="secondary-button"
-              type="button"
-            >授权浏览器通知</button>
-            <div class="field-help">
-              浏览器通知仅在当前浏览器和站点授权后可用。
-            </div>
-          </div>
-        </details>
-
-        <details class="settings-section">
-          <summary class="settings-title">定时休息</summary>
-
-          <label class="option-row">
-            <span>启用运行/休息周期</span>
-            <span class="switch">
-              <input
-                id="schedule-enabled-toggle"
-                type="checkbox"
-                role="switch"
-                aria-label="启用运行和休息周期"
-              />
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-
-          <div id="schedule-settings" class="settings-group" hidden>
-            <label class="option-row">
-              <span>休息中使用游戏内置自动钓鱼</span>
-              <span class="switch">
-                <input
-                  id="schedule-game-auto-fishing-toggle"
-                  type="checkbox"
-                  role="switch"
-                  aria-label="定时休息中使用游戏内置自动钓鱼"
-                />
-                <span class="switch-track" aria-hidden="true"></span>
-              </span>
-            </label>
-
-            <div class="number-grid">
-              <label class="field">
-                <span class="field-label">运行分钟</span>
-                <input
-                  id="schedule-work-minutes"
-                  class="input"
-                  type="number"
-                  min="1"
-                  max="1440"
-                  step="1"
-                  inputmode="numeric"
-                />
-              </label>
-              <label class="field">
-                <span class="field-label">休息分钟</span>
-                <input
-                  id="schedule-rest-minutes"
-                  class="input"
-                  type="number"
-                  min="1"
-                  max="1440"
-                  step="1"
-                  inputmode="numeric"
-                />
-              </label>
-            </div>
-
-            <div class="row">
-              <span class="label">当前周期</span>
-              <span id="schedule-status" class="value">等待启动</span>
-            </div>
-
-            <div class="field-help">
-              每轮实际运行和休息时长，都会在设置值上加入 -5%～+10% 的随机时间。休息结束恢复脚本自动钓鱼前，会先停止游戏内置自动钓鱼。
-            </div>
-          </div>
-        </details>
       </div>
     </div>
   </div>
@@ -5303,8 +5083,6 @@
 				autoBaitPurchaseQuantity: shadowRoot.querySelector("#auto-bait-purchase-quantity"),
 				autoBaitLastPurchasedAt: shadowRoot.querySelector("#auto-bait-last-purchased-at"),
 				idleReloadMinutes: shadowRoot.querySelector("#idle-reload-minutes"),
-				pushKeyInput: shadowRoot.querySelector("#push-key"),
-				pushKeyHelp: shadowRoot.querySelector("#push-key-help"),
 				captchaBypassToggle: shadowRoot.querySelector("#captcha-bypass-toggle"),
 				verificationHistory: shadowRoot.querySelector("#verification-history"),
 				controlTab: shadowRoot.querySelector("#control-tab"),
@@ -5313,17 +5091,6 @@
 				controlView: shadowRoot.querySelector("#control-view"),
 				earningsView: shadowRoot.querySelector("#earnings-view"),
 				settingsView: shadowRoot.querySelector("#settings-view"),
-				notificationModeInputs: shadowRoot.querySelectorAll("input[name=\"notification-mode\"]"),
-				serverNotificationSettings: shadowRoot.querySelector("#server-notification-settings"),
-				browserNotificationSettings: shadowRoot.querySelector("#browser-notification-settings"),
-				browserNotificationPermission: shadowRoot.querySelector("#browser-notification-permission"),
-				browserNotificationPermissionButton: shadowRoot.querySelector("#browser-notification-permission-button"),
-				scheduleEnabledToggle: shadowRoot.querySelector("#schedule-enabled-toggle"),
-				scheduleSettings: shadowRoot.querySelector("#schedule-settings"),
-				scheduleGameAutoFishingToggle: shadowRoot.querySelector("#schedule-game-auto-fishing-toggle"),
-				scheduleWorkMinutes: shadowRoot.querySelector("#schedule-work-minutes"),
-				scheduleRestMinutes: shadowRoot.querySelector("#schedule-rest-minutes"),
-				scheduleStatus: shadowRoot.querySelector("#schedule-status"),
 				statsBiomeFilter: shadowRoot.querySelector("#stats-biome-filter"),
 				statsBaitFilter: shadowRoot.querySelector("#stats-bait-filter"),
 				statsScope: shadowRoot.querySelector("#stats-scope"),
@@ -5352,11 +5119,6 @@
 				loginMonitorStatus: shadowRoot.querySelector("#login-monitor-status"),
 				loginMonitorRareDropNotifyToggle: shadowRoot.querySelector("#login-monitor-rare-drop-notify-toggle")
 			};
-			ui.pushKeyInput.value = getState().pushKey;
-			ui.pushKeyInput.addEventListener("input", (event) => {
-				setPushKey(event.currentTarget.value);
-				renderPushKeyHelp();
-			});
 			ui.collapseToggle.addEventListener("click", () => {
 				setPanelCollapsed(!panelCollapsed);
 			});
@@ -5462,24 +5224,6 @@
 			ui.settingsTab.addEventListener("click", () => {
 				setPanelView("settings");
 			});
-			for (const input of ui.notificationModeInputs) input.addEventListener("change", (event) => {
-				if (event.currentTarget.checked) setNotificationMode(event.currentTarget.value);
-			});
-			ui.browserNotificationPermissionButton.addEventListener("click", () => {
-				requestBrowserNotificationPermission();
-			});
-			ui.scheduleEnabledToggle.addEventListener("change", (event) => {
-				setScheduleEnabled(event.currentTarget.checked);
-			});
-			ui.scheduleGameAutoFishingToggle.addEventListener("change", (event) => {
-				setScheduleGameAutoFishingDuringRest(event.currentTarget.checked);
-			});
-			ui.scheduleWorkMinutes.addEventListener("change", (event) => {
-				setScheduleMinutes("workMinutes", event.currentTarget.value);
-			});
-			ui.scheduleRestMinutes.addEventListener("change", (event) => {
-				setScheduleMinutes("restMinutes", event.currentTarget.value);
-			});
 			ui.loginMonitorToggle.addEventListener("change", (event) => {
 				setLoginMonitorEnabled(event.currentTarget.checked);
 			});
@@ -5520,11 +5264,9 @@
 			renderGameAutoFishingSettings();
 			renderIdleReloadSettings();
 			renderPanelCollapsed();
-			renderNotificationSettings();
 			renderLoginMonitorSettings();
 			loginMonitorStatusEl = ui.loginMonitorStatus;
 			if (loginMonitorStatusEl) loginMonitorStatusEl.textContent = loginMonitorRunning ? "监控中" : "未监控";
-			renderScheduleSettings();
 			updateClickCount();
 			setPanelView(panelView);
 			renderEarningsStats();
@@ -5572,8 +5314,6 @@
 				renderClickDelaySettings();
 				renderGameAutoFishingSettings();
 				renderIdleReloadSettings();
-				renderNotificationSettings();
-				renderScheduleSettings();
 				renderLoginMonitorSettings();
 				renderVerificationHistory();
 			}
@@ -5753,59 +5493,6 @@
 			ui.collapseToggle.setAttribute("aria-label", `${action}控制面板`);
 			ui.collapseToggle.setAttribute("aria-expanded", panelCollapsed ? "false" : "true");
 		}
-		function renderPushKeyHelp() {
-			if (ui?.pushKeyHelp) ui.pushKeyHelp.hidden = Boolean(getState().pushKey);
-		}
-		function renderNotificationSettings() {
-			if (!ui?.notificationModeInputs?.length) return;
-			const { notificationMode } = getState();
-			for (const input of ui.notificationModeInputs) input.checked = input.value === notificationMode;
-			const showBrowserSettings = notificationMode === "browser";
-			ui.serverNotificationSettings.hidden = showBrowserSettings;
-			ui.browserNotificationSettings.hidden = !showBrowserSettings;
-			renderPushKeyHelp();
-			if (!showBrowserSettings) return;
-			const permission = typeof window.Notification === "function" ? window.Notification.permission : "unsupported";
-			const permissionLabels = {
-				granted: "已授权",
-				denied: "已拒绝",
-				default: "未授权",
-				unsupported: "当前浏览器不支持"
-			};
-			ui.browserNotificationPermission.textContent = permissionLabels[permission] ?? "未知";
-			ui.browserNotificationPermissionButton.disabled = permission === "granted" || permission === "denied" || permission === "unsupported";
-			ui.browserNotificationPermissionButton.textContent = permission === "granted" ? "浏览器通知已授权" : permission === "denied" ? "请在浏览器设置中重新授权" : permission === "unsupported" ? "当前浏览器不支持通知" : "授权浏览器通知";
-		}
-		function renderScheduleStatus(remaining = null) {
-			if (!ui?.scheduleStatus) return;
-			const { enabled, scheduleDuration, scheduleEndsAt, schedulePhase, scheduleSettings } = getState();
-			if (!scheduleSettings.enabled) {
-				ui.scheduleStatus.textContent = "未启用";
-				return;
-			}
-			if (scheduleEndsAt === 0 || scheduleDuration === 0) {
-				ui.scheduleStatus.textContent = enabled ? "等待开始本轮运行" : "脚本启动后开始";
-				return;
-			}
-			if (schedulePhase === "rest") {
-				const restRemaining = remaining ?? scheduleEndsAt - Date.now();
-				ui.scheduleStatus.textContent = `休息中，剩余 ${formatScheduleDuration(restRemaining)}`;
-				return;
-			}
-			ui.scheduleStatus.textContent = `本轮运行 ${formatScheduleDuration(scheduleDuration)}`;
-		}
-		function renderScheduleSettings() {
-			if (!ui?.scheduleEnabledToggle) return;
-			const { scheduleSettings } = getState();
-			ui.scheduleEnabledToggle.checked = scheduleSettings.enabled;
-			ui.scheduleEnabledToggle.setAttribute("aria-checked", scheduleSettings.enabled ? "true" : "false");
-			ui.scheduleSettings.hidden = !scheduleSettings.enabled;
-			ui.scheduleGameAutoFishingToggle.checked = scheduleSettings.gameAutoFishingDuringRest;
-			ui.scheduleGameAutoFishingToggle.setAttribute("aria-checked", scheduleSettings.gameAutoFishingDuringRest ? "true" : "false");
-			ui.scheduleWorkMinutes.value = String(scheduleSettings.workMinutes);
-			ui.scheduleRestMinutes.value = String(scheduleSettings.restMinutes);
-			renderScheduleStatus();
-		}
 		function renderLoginMonitorSettings() {
 			if (!ui?.loginMonitorToggle) return;
 			const { loginMonitorSettings } = getState();
@@ -5963,9 +5650,6 @@
 			renderEarningsStats,
 			renderGameAutoFishingSettings,
 			renderIdleReloadSettings,
-			renderNotificationSettings,
-			renderScheduleSettings,
-			renderScheduleStatus,
 			renderToggle,
 			renderVerificationHistory,
 			renderLoginMonitorSettings,
@@ -5977,8 +5661,6 @@
 	var enabled = loadEnabled();
 	var captchaBypassEnabled = loadCaptchaBypassEnabled();
 	var verificationHistory = loadVerificationHistory();
-	var pushKey = loadPushKey();
-	var notificationMode = loadNotificationMode();
 	var clickDelaySettings = loadClickDelaySettings();
 	var gameAutoFishingSettings = loadGameAutoFishingSettings();
 	var scheduleSettings = loadScheduleSettings();
@@ -6105,10 +5787,6 @@
 			handleWeatherResponse(response);
 		}
 	});
-	function setPushKey(nextPushKey) {
-		pushKey = String(nextPushKey ?? "").trim();
-		savePushKey(pushKey);
-	}
 	function setLoginMonitorEnabled(nextEnabled) {
 		loginMonitorSettings = { ...loginMonitorSettings, enabled: Boolean(nextEnabled) };
 		saveLoginMonitorSettings(loginMonitorSettings);
@@ -6133,10 +5811,6 @@
 		saveVerificationHistory(verificationHistory);
 		panel?.renderVerificationHistory();
 	}
-	async function requestBrowserNotificationPermission() {
-		await requestBrowserNotificationPermission$1();
-		panel.renderNotificationSettings();
-	}
 	function resetEarningsStats() {
 		if (!window.confirm("确定重置全部收益统计吗？此操作无法撤销。")) return;
 		earningsStats = createEmptyEarningsStats();
@@ -6156,10 +5830,7 @@
 			autoBaitSettings,
 			autoBiomeSettings,
 			autoBossSettings,
-			notificationMode,
-			pushKey,
 			loginMonitorSettings,
-			scheduleSettings,
 			...autoBiome?.getSnapshot() ?? {
 				autoBiomeCompetitionBiomes: {
 					guildTournamentBiomeId: null,
@@ -6193,7 +5864,6 @@
 				gameAutoFishingMayBeActive: false,
 				gameAutoFishingStatus: "未启用"
 			},
-			...schedule.getSnapshot()
 		};
 	}
 	function handleAutomationStateChanged({ forceBait = false } = {}) {
@@ -6503,12 +6173,6 @@
 		panel.renderCaptchaBypassToggle();
 		captcha.handleBypassSettingChanged();
 	}
-	function setNotificationMode(nextMode) {
-		notificationMode = nextMode === "browser" ? "browser" : "server";
-		saveNotificationMode(notificationMode);
-		panel.renderNotificationSettings();
-		if (notificationMode === "browser" && typeof window.Notification === "function" && window.Notification.permission === "default") requestBrowserNotificationPermission();
-	}
 	function setAutoBiomeEnabled(nextEnabled) {
 		autoBiomeSettings = {
 			...autoBiomeSettings,
@@ -6591,36 +6255,6 @@
 		fishingActivityWatchdog.markFishing();
 		panel.renderIdleReloadSettings();
 	}
-	function setScheduleEnabled(nextEnabled) {
-		scheduleSettings = {
-			...scheduleSettings,
-			enabled: Boolean(nextEnabled)
-		};
-		saveScheduleSettings(scheduleSettings);
-		schedule.reset();
-		fishingActivityWatchdog.markFishing();
-		if (enabled && scheduleSettings.enabled) schedule.startWork();
-	}
-	function setScheduleMinutes(field, value) {
-		const nextValue = normalizeScheduleMinutes(value, scheduleSettings[field]);
-		scheduleSettings = {
-			...scheduleSettings,
-			[field]: nextValue
-		};
-		saveScheduleSettings(scheduleSettings);
-		schedule.reset();
-		fishingActivityWatchdog.markFishing();
-		if (enabled && scheduleSettings.enabled) schedule.startWork();
-	}
-	function setScheduleGameAutoFishingDuringRest(nextEnabled) {
-		scheduleSettings = {
-			...scheduleSettings,
-			gameAutoFishingDuringRest: Boolean(nextEnabled)
-		};
-		saveScheduleSettings(scheduleSettings);
-		panel.renderScheduleSettings();
-		panel.renderAutoBaitSettings();
-	}
 	function initialize() {
 		schedule = createScheduleController({
 			getCaptcha() {
@@ -6651,12 +6285,8 @@
 				}
 				return stopped;
 			},
-			renderSettings() {
-				panel?.renderScheduleSettings();
-			},
-			renderStatus(remaining) {
-				panel?.renderScheduleStatus(remaining);
-			},
+			renderSettings() {},
+			renderStatus(remaining) {},
 			setNextDelay(text) {
 				panel?.setNextDelay(text);
 			},
@@ -6680,7 +6310,6 @@
 		});
 		panel = createPanelController({
 			actions: {
-				requestBrowserNotificationPermission,
 				resetEarningsStats,
 				setAutoBaitEnabled,
 				setAutoBaitGrade,
@@ -6696,15 +6325,9 @@
 				setGameAutoFishingBaitGrade,
 				setGameAutoFishingEnabled,
 				setIdleReloadMinutes,
-				setNotificationMode,
-				setPushKey,
-				setScheduleEnabled,
-				setScheduleGameAutoFishingDuringRest,
-				setScheduleMinutes,
 				setLoginMonitorEnabled,
 				setLoginMonitorConfig
 			},
-			formatScheduleDuration,
 			getState: getPanelState
 		});
 		captcha = createCaptchaController({
@@ -6718,10 +6341,7 @@
 				};
 			},
 			notify() {
-				return sendHumanVerificationNotification({
-					notificationMode,
-					pushKey
-				});
+				return sendWeChatHumanVerificationNotification();
 			},
 			onVerificationResult: recordVerificationResult,
 			setEnabled,
