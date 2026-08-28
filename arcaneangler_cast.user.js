@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.09
+// @version      4.11
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
@@ -523,7 +523,7 @@
 			personalDerbyBiomeId: activeDerby?.is_registered === true ? normalizeBiomeId$1(activeDerby.biome_id) : null
 		};
 	}
-	function selectBestBiome({ biomeWeight, competitionBiomes, dailyQuests = [], guildBoostersByBiome = {}, includeMasteryXpBonus = true, masteryXpBonusesByBiome = {}, now = Date.now(), player, priorityOrder, weatherByBiome }) {
+	function selectBestBiome({ biomeWeight, competitionBiomes, dailyQuests = [], guildBoostersByBiome = {}, includeMasteryXpBonus = true, masteryXpBonusesByBiome = {}, maxBiome = 0, now = Date.now(), player, priorityOrder, weatherByBiome }) {
 		const decisionOrder = getAutoBiomeDecisionOrder(priorityOrder);
 		const usesDailyQuests = decisionOrder.includes(AUTO_BIOME_PRIORITY_IDS.dailyQuest);
 		const unlockedBiomes = Array.isArray(player?.unlockedBiomes) ? player.unlockedBiomes : [player?.currentBiome ?? 1];
@@ -531,7 +531,7 @@
 		for (const rawBiomeId of unlockedBiomes) {
 			const biomeId = normalizeBiomeId$1(rawBiomeId);
 			const weather = weatherByBiome?.[biomeId];
-			if (!biomeId || !weather) continue;
+			if (!biomeId || maxBiome > 0 && biomeId > maxBiome || !weather) continue;
 			const dailyQuestMatchCount = usesDailyQuests ? findMatchingDailyQuests({
 				biomeId,
 				dailyQuests,
@@ -1003,6 +1003,7 @@
 				guildBoostersByBiome,
 				includeMasteryXpBonus: autoBiomeSettings.includeMasteryXpBonus !== false,
 				masteryXpBonusesByBiome,
+				maxBiome: autoBiomeSettings.maxBiome,
 				player,
 				priorityOrder: normalizedPriorityOrder,
 				weatherByBiome
@@ -3086,6 +3087,10 @@
 		const weight = Number(value);
 		return AUTO_BIOME_WEIGHTS.includes(weight) ? weight : fallback;
 	}
+	function normalizeAutoBiomeMaxBiome(value, fallback = 0) {
+		const biomeId = Number(value);
+		return Number.isInteger(biomeId) && biomeId >= 0 ? biomeId : fallback;
+	}
 	function migrateLegacyAutoBiomePriorityOrder(savedSettings) {
 		const enabledPriorities = [];
 		if (savedSettings.preferCompetitionBiomes !== false) enabledPriorities.push(AUTO_BIOME_PRIORITY_IDS.guildCompetition, AUTO_BIOME_PRIORITY_IDS.personalCompetition);
@@ -3103,6 +3108,7 @@
 			biomeWeight: 5,
 			enabled: false,
 			includeMasteryXpBonus: true,
+			maxBiome: 0,
 			priorityOrder: [...DEFAULT_AUTO_BIOME_PRIORITY_ORDER]
 		};
 		try {
@@ -3112,6 +3118,7 @@
 				biomeWeight: normalizeAutoBiomeWeight(savedSettings.biomeWeight, defaults.biomeWeight),
 				enabled: savedSettings.enabled === true,
 				includeMasteryXpBonus: savedSettings.includeMasteryXpBonus !== false,
+				maxBiome: normalizeAutoBiomeMaxBiome(savedSettings.maxBiome, defaults.maxBiome),
 				priorityOrder: Array.isArray(savedSettings.priorityOrder) ? normalizeAutoBiomePriorityOrder(savedSettings.priorityOrder) : migrateLegacyAutoBiomePriorityOrder(savedSettings)
 			};
 		} catch (error) {
@@ -4326,7 +4333,7 @@
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
 		let ui = null;
-		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
+		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomeMaxBiome, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
 		function normalizeText(text) {
 			return String(text ?? "").replace(/\s+/g, " ").trim();
 		}
@@ -4832,6 +4839,15 @@
         <details class="settings-section">
           <summary class="settings-title">自动换地图</summary>
 
+          <label class="field">
+            <span class="field-label">最大生态区域</span>
+            <select id="auto-biome-max-biome" class="input"></select>
+          </label>
+
+          <div class="field-help">
+            选图时仅在生态区域 1 到该编号范围内选择；选“不限”则使用全部已解锁区域。
+          </div>
+
           <div class="field-label priority-heading">选图优先级</div>
 
           <div
@@ -5078,6 +5094,7 @@
 				autoBiomeDailyQuestStatus: shadowRoot.querySelector("#auto-biome-daily-quest-status"),
 				autoBiomeWeightInputs: shadowRoot.querySelectorAll("input[name=\"auto-biome-weight\"]"),
 				autoBiomeMasteryXpBonusToggle: shadowRoot.querySelector("#auto-biome-mastery-xp-bonus-toggle"),
+				autoBiomeMaxBiome: shadowRoot.querySelector("#auto-biome-max-biome"),
 				autoBiomeUpdatedAt: shadowRoot.querySelector("#auto-biome-updated-at"),
 				autoBaitStatus: shadowRoot.querySelector("#auto-bait-status"),
 				autoBaitToggle: shadowRoot.querySelector("#auto-bait-toggle"),
@@ -5158,6 +5175,9 @@
 			});
 			ui.autoBiomeMasteryXpBonusToggle.addEventListener("change", (event) => {
 				setAutoBiomeMasteryXpBonusEnabled(event.currentTarget.checked);
+			});
+			ui.autoBiomeMaxBiome.addEventListener("change", (event) => {
+				setAutoBiomeMaxBiome(event.currentTarget.value);
 			});
 			ui.autoBiomePriorityList.addEventListener("dragstart", (event) => {
 				const item = event.target.closest(".priority-item");
@@ -5562,6 +5582,19 @@
 				moveButtons[0].disabled = priorityIndex === 0;
 				moveButtons[1].disabled = priorityIndex === priorityOrder.length - 1;
 			}
+			const unlockedBiomes = getState().unlockedBiomes ?? [];
+			const maxUnlockedBiome = unlockedBiomes.reduce((max, id) => Math.max(max, Number(id) || 0), 0);
+			const maxBiomeOptions = [{ value: "0", label: "不限" }];
+			for (let n = 1; n <= maxUnlockedBiome; n++) maxBiomeOptions.push({ value: String(n), label: `B${n}` });
+			ui.autoBiomeMaxBiome.replaceChildren();
+			for (const option of maxBiomeOptions) {
+				const element = document.createElement("option");
+				element.value = option.value;
+				element.textContent = option.label;
+				ui.autoBiomeMaxBiome.appendChild(element);
+			}
+			const requestedMaxBiome = Number(autoBiomeSettings.maxBiome) || 0;
+			ui.autoBiomeMaxBiome.value = requestedMaxBiome > 0 && requestedMaxBiome <= maxUnlockedBiome ? String(requestedMaxBiome) : "0";
 			for (const input of ui.autoBiomeWeightInputs) input.checked = Number(input.value) === autoBiomeSettings.biomeWeight;
 			ui.autoBiomeUpdatedAt.textContent = autoBiomeLastUpdatedAt ? new Date(autoBiomeLastUpdatedAt).toLocaleTimeString() : "等待接口数据";
 		}
@@ -5850,6 +5883,7 @@
 			autoBiomeSettings,
 			autoBossSettings,
 			loginMonitorSettings,
+			unlockedBiomes: gameState.getPlayerSnapshot()?.unlockedBiomes ?? [],
 			...autoBiome?.getSnapshot() ?? {
 				autoBiomeCompetitionBiomes: {
 					guildTournamentBiomeId: null,
@@ -6219,6 +6253,16 @@
 		panel.renderAutoBiomeSettings();
 		handleAutomationStateChanged();
 	}
+	function setAutoBiomeMaxBiome(nextValue) {
+		autoBiomeSettings = {
+			...autoBiomeSettings,
+			maxBiome: normalizeAutoBiomeMaxBiome(nextValue, autoBiomeSettings.maxBiome)
+		};
+		saveAutoBiomeSettings(autoBiomeSettings);
+		panel.renderAutoBiomeSettings();
+		handleAutomationStateChanged();
+	}
+
 	function setAutoBiomePriorityOrder(nextPriorityOrder) {
 		autoBiomeSettings = {
 			...autoBiomeSettings,
@@ -6707,6 +6751,7 @@
 				setAutoBossEnabled,
 				setAutoBiomeEnabled,
 				setAutoBiomeMasteryXpBonusEnabled,
+				setAutoBiomeMaxBiome,
 				setAutoBiomePriorityOrder,
 				setAutoBiomeWeight,
 				setCaptchaBypassEnabled,
