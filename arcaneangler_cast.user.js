@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.11
+// @version      4.13
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
@@ -1103,7 +1103,6 @@
 	var AUTO_BIOME_SETTINGS_STORAGE_KEY = "arcane-angler-auto-biome-settings-v1";
 	var AUTO_BAIT_SETTINGS_STORAGE_KEY = "arcane-angler-auto-bait-settings-v1";
 	var AUTO_BOSS_SETTINGS_STORAGE_KEY = "arcane-angler-auto-boss-settings-v1";
-	var IDLE_RELOAD_SETTINGS_STORAGE_KEY = "arcane-angler-idle-reload-settings-v1";
 	var PANEL_COLLAPSED_STORAGE_KEY = "arcane-angler-panel-collapsed-v1";
 	var EARNINGS_STORAGE_KEY = "arcane-angler-earnings-v1";
 	var LOGIN_MONITOR_ENABLED_STORAGE_KEY = "arcane-angler-login-monitor-enabled-v1";
@@ -3176,29 +3175,6 @@
 			return defaults;
 		}
 	}
-	function normalizeIdleReloadMinutes(value, fallback = 5) {
-		const minutes = Number(value);
-		if (!Number.isFinite(minutes) || minutes < 1) return fallback;
-		return Math.min(1440, Math.round(minutes));
-	}
-	function loadIdleReloadSettings() {
-		const defaults = { minutes: 5 };
-		try {
-			const savedSettings = JSON.parse(localStorage.getItem(IDLE_RELOAD_SETTINGS_STORAGE_KEY));
-			if (!savedSettings || typeof savedSettings !== "object") return defaults;
-			return { minutes: normalizeIdleReloadMinutes(savedSettings.minutes, defaults.minutes) };
-		} catch (error) {
-			console.warn("[自动抛竿] 无法读取无钓鱼刷新设置：", error);
-			return defaults;
-		}
-	}
-	function saveIdleReloadSettings(idleReloadSettings) {
-		try {
-			localStorage.setItem(IDLE_RELOAD_SETTINGS_STORAGE_KEY, JSON.stringify(idleReloadSettings));
-		} catch (error) {
-			console.warn("[自动抛竿] 无法保存无钓鱼刷新设置：", error);
-		}
-	}
 	function saveAutoBaitSettings(autoBaitSettings) {
 		try {
 			localStorage.setItem(AUTO_BAIT_SETTINGS_STORAGE_KEY, JSON.stringify(autoBaitSettings));
@@ -4333,7 +4309,7 @@
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
 		let ui = null;
-		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomeMaxBiome, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setIdleReloadMinutes, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
+		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomeMaxBiome, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
 		function normalizeText(text) {
 			return String(text ?? "").replace(/\s+/g, " ").trim();
 		}
@@ -4685,6 +4661,21 @@
           </div>
         </details>
 
+        <details class='settings-section'>
+          <summary class='settings-title'>换鱼助手</summary>
+
+          <div class='field-help'>
+            将背包以及“交易 → 出售列表 → 我的上架”中的奇异鱼复制到剪贴板，可直接粘贴发给别人换鱼。
+          </div>
+
+          <button id='export-exotic-fish-zh' class='toggle' type='button'>
+            导出已有奇异（中）
+          </button>
+          <button id='export-exotic-fish-en' class='toggle' type='button'>
+            导出已有奇异（英）
+          </button>
+        </details>
+
         <details class="settings-section">
           <summary class="settings-title">自动买鱼饵</summary>
 
@@ -4973,27 +4964,6 @@
         </details>
 
         <details class="settings-section">
-          <summary class="settings-title">卡住自动恢复</summary>
-
-          <label class="field">
-            <span class="field-label">连续未钓鱼（分钟）</span>
-            <input
-              id="idle-reload-minutes"
-              class="input"
-              type="number"
-              min="1"
-              max="1440"
-              step="1"
-              inputmode="numeric"
-            />
-          </label>
-
-          <div class="field-help">
-            自动抛竿运行期间，连续超过该时间未收到钓鱼结果时刷新一次页面；定时休息期间不计时。
-          </div>
-        </details>
-
-        <details class="settings-section">
           <summary class="settings-title">自动点击间隔</summary>
 
           <div class="number-grid">
@@ -5108,7 +5078,6 @@
 				autoBaitMinimumQuantity: shadowRoot.querySelector("#auto-bait-minimum-quantity"),
 				autoBaitPurchaseQuantity: shadowRoot.querySelector("#auto-bait-purchase-quantity"),
 				autoBaitLastPurchasedAt: shadowRoot.querySelector("#auto-bait-last-purchased-at"),
-				idleReloadMinutes: shadowRoot.querySelector("#idle-reload-minutes"),
 				captchaBypassToggle: shadowRoot.querySelector("#captcha-bypass-toggle"),
 				verificationHistory: shadowRoot.querySelector("#verification-history"),
 				controlTab: shadowRoot.querySelector("#control-tab"),
@@ -5138,6 +5107,8 @@
 				collapseToggle: shadowRoot.querySelector("#collapse-toggle"),
 				toggle: shadowRoot.querySelector("#toggle"),
 				exportFishImage: shadowRoot.querySelector("#export-fish-image"),
+				exportExoticFishZh: shadowRoot.querySelector('#export-exotic-fish-zh'),
+				exportExoticFishEn: shadowRoot.querySelector('#export-exotic-fish-en'),
 				loginMonitorToggle: shadowRoot.querySelector("#login-monitor-toggle"),
 				loginMonitorMachineName: shadowRoot.querySelector("#login-monitor-machine-name"),
 				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
@@ -5159,6 +5130,24 @@
 				exportFishImageData().finally(() => {
 					ui.exportFishImage.disabled = false;
 					ui.exportFishImage.textContent = "导出换鱼助手";
+				});
+			});
+			ui.exportExoticFishZh.addEventListener('click', () => {
+				if (ui.exportExoticFishZh.disabled) return;
+				ui.exportExoticFishZh.disabled = true;
+				ui.exportExoticFishZh.textContent = '正在导出...';
+				exportOwnedExoticFish('zh').finally(() => {
+					ui.exportExoticFishZh.disabled = false;
+					ui.exportExoticFishZh.textContent = '导出已有奇异（中）';
+				});
+			});
+			ui.exportExoticFishEn.addEventListener('click', () => {
+				if (ui.exportExoticFishEn.disabled) return;
+				ui.exportExoticFishEn.disabled = true;
+				ui.exportExoticFishEn.textContent = '正在导出...';
+				exportOwnedExoticFish('en').finally(() => {
+					ui.exportExoticFishEn.disabled = false;
+					ui.exportExoticFishEn.textContent = '导出已有奇异（英）';
 				});
 			});
 			ui.gameAutoFishingToggle.addEventListener("change", (event) => {
@@ -5248,9 +5237,6 @@
 			]) input.addEventListener("change", (event) => {
 				setClickDelaySetting(field, event.currentTarget.value);
 			});
-			ui.idleReloadMinutes.addEventListener("change", (event) => {
-				setIdleReloadMinutes(event.currentTarget.value);
-			});
 			for (const input of ui.autoBiomeWeightInputs) input.addEventListener("change", (event) => {
 				if (event.currentTarget.checked) setAutoBiomeWeight(event.currentTarget.value);
 			});
@@ -5301,7 +5287,6 @@
 			renderVerificationHistory();
 			renderClickDelaySettings();
 			renderGameAutoFishingSettings();
-			renderIdleReloadSettings();
 			renderPanelCollapsed();
 			renderLoginMonitorSettings();
 			loginMonitorStatusEl = ui.loginMonitorStatus;
@@ -5352,7 +5337,6 @@
 				renderAutoBossSettings();
 				renderClickDelaySettings();
 				renderGameAutoFishingSettings();
-				renderIdleReloadSettings();
 				renderLoginMonitorSettings();
 				renderVerificationHistory();
 			}
@@ -5623,10 +5607,6 @@
 			ui.autoBossToggle.setAttribute("aria-checked", autoBossSettings.enabled ? "true" : "false");
 			ui.autoBossStatus.textContent = autoBossStatus;
 		}
-		function renderIdleReloadSettings() {
-			if (!ui?.idleReloadMinutes) return;
-			ui.idleReloadMinutes.value = String(getState().idleReloadSettings.minutes);
-		}
 		function renderGameAutoFishingSettings() {
 			if (!ui?.gameAutoFishingToggle) return;
 			const { gameAutoFishingSettings, gameAutoFishingStatus } = getState();
@@ -5701,7 +5681,6 @@
 			renderClickDelaySettings,
 			renderEarningsStats,
 			renderGameAutoFishingSettings,
-			renderIdleReloadSettings,
 			renderToggle,
 			renderVerificationHistory,
 			renderLoginMonitorSettings,
@@ -5719,7 +5698,6 @@
 	var autoBiomeSettings = loadAutoBiomeSettings();
 	var autoBaitSettings = loadAutoBaitSettings();
 	var autoBossSettings = loadAutoBossSettings();
-	var idleReloadSettings = loadIdleReloadSettings();
 	var earningsStats = loadEarningsStats();
 	var loopId = 0;
 	var clickCount = 0;
@@ -5878,7 +5856,6 @@
 			earningsStats,
 			enabled,
 			gameAutoFishingSettings,
-			idleReloadSettings,
 			autoBaitSettings,
 			autoBiomeSettings,
 			autoBossSettings,
@@ -5930,11 +5907,11 @@
 	}
 	function reloadIfFishingIdle() {
 		if (!enabled || gameAutoFishingSettings.enabled || schedule?.getSnapshot().schedulePhase === "rest") return false;
-		const timeoutMilliseconds = idleReloadSettings.minutes * 6e4;
+		const timeoutMilliseconds = 1 * 6e4;
 		if (!fishingActivityWatchdog.observe(timeoutMilliseconds)) return false;
-		panel.setStatus(`连续 ${idleReloadSettings.minutes} 分钟未钓鱼，正在刷新页面`);
+		panel.setStatus("连续 1 分钟未钓鱼，正在刷新页面");
 		panel.setNextDelay("—");
-		console.warn(`[自动抛竿] 连续 ${idleReloadSettings.minutes} 分钟未收到抛竿结果，正在刷新页面。`);
+		console.warn("[自动抛竿] 连续 1 分钟未收到抛竿结果，正在刷新页面。");
 		window.location.reload();
 		return true;
 	}
@@ -6312,12 +6289,6 @@
 		saveClickDelaySettings(clickDelaySettings);
 		panel.renderClickDelaySettings();
 	}
-	function setIdleReloadMinutes(nextMinutes) {
-		idleReloadSettings = { minutes: normalizeIdleReloadMinutes(nextMinutes, idleReloadSettings.minutes) };
-		saveIdleReloadSettings(idleReloadSettings);
-		fishingActivityWatchdog.markFishing();
-		panel.renderIdleReloadSettings();
-	}
 	var exportFishBiomeMap = {};
 
 	var EXPORT_FISH_RARITY_ORDER = { 'Exotic': 8, 'Arcane': 9 };
@@ -6689,6 +6660,101 @@
 			panel?.setStatus("导出失败：" + e.message);
 		}
 	}
+
+	async function copyTextToClipboard(text) {
+		const doc = unsafeWindow.document || document;
+		const nav = unsafeWindow.navigator || navigator;
+		if (nav && nav.clipboard && nav.clipboard.writeText) {
+			try {
+				await nav.clipboard.writeText(text);
+				return true;
+			} catch (e) {}
+		}
+		try {
+			const textarea = doc.createElement('textarea');
+			textarea.value = text;
+			textarea.setAttribute('readonly', '');
+			textarea.style.cssText = 'position:fixed;top:-1000px;left:-1000px;';
+			doc.body.appendChild(textarea);
+			textarea.focus();
+			textarea.select();
+			textarea.setSelectionRange(0, text.length);
+			const ok = doc.execCommand('copy');
+			textarea.remove();
+			return ok;
+		} catch (e) {
+			return false;
+		}
+	}
+
+	async function collectOwnedExoticFish() {
+		exportFishBiomeMap = exportFishBuildBiomeMap();
+		const items = [];
+		const seen = new Set();
+		function addFish(biomeId, nameEn) {
+			if (!nameEn) return;
+			const resolvedBiomeId = Number(biomeId) || exportFishBiomeMap[nameEn]?.biomeId || 0;
+			const key = resolvedBiomeId + '_' + nameEn;
+			if (seen.has(key)) return;
+			seen.add(key);
+			items.push({ biomeId: resolvedBiomeId, nameEn: nameEn });
+		}
+		try {
+			const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
+			if (playerResponse.ok) {
+				const playerData = await playerResponse.json();
+				(playerData?.inventory || []).forEach((item) => {
+					if (item.rarity !== 'Exotic') return;
+					addFish(item.biomeId, item.name || item.fishName);
+				});
+			}
+		} catch (e) {}
+		try {
+			const listingsResponse = await window.fetch('/api/marketplace/my-listings', { credentials: 'include' });
+			if (listingsResponse.ok) {
+				const listingsData = await listingsResponse.json();
+				(listingsData?.listings || []).forEach((listing) => {
+					if (listing.item_type !== 'fish') return;
+					if (listing.fish_rarity !== 'Exotic') return;
+					addFish(listing.fish_biome_id, listing.fish_name);
+				});
+			}
+		} catch (e) {}
+		items.sort((a, b) => (a.biomeId - b.biomeId) || String(a.nameEn).localeCompare(String(b.nameEn)));
+		return items;
+	}
+
+	function formatOwnedExoticFishText(items, lang) {
+		if (!items.length) return lang === 'en' ? 'No exotic fish' : '暂无奇异鱼';
+		if (lang === 'en') {
+			return 'I have ' + items.map((fish) => 'B' + fish.biomeId + ' ' + fish.nameEn).join(', ');
+		}
+		return '我有' + items.map((fish) => 'B' + fish.biomeId + ' ' + exportFishGetChineseName(fish.nameEn)).join('，');
+	}
+
+	async function exportOwnedExoticFish(lang) {
+		try {
+			const items = await collectOwnedExoticFish();
+			const text = formatOwnedExoticFishText(items, lang);
+			const copied = await copyTextToClipboard(text);
+			const successMessage = lang === 'en' ? '已复制奇异鱼到剪贴板（英文）' : '已复制奇异鱼到剪贴板（中文）';
+			if (copied) {
+				panel?.setStatus(successMessage);
+				if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(successMessage, 'success');
+			} else {
+				panel?.setStatus('复制失败，请手动复制');
+				if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast('复制失败，请手动复制', 'error');
+			}
+			return { copied: copied, items: items, text: text };
+		} catch (e) {
+			console.error('[换鱼助手] 复制奇异鱼失败:', e);
+			const errorMessage = '复制失败：' + e.message;
+			panel?.setStatus(errorMessage);
+			if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(errorMessage, 'error');
+			return { copied: false, items: [], text: '' };
+		}
+	}
+
 	function initialize() {
 		schedule = createScheduleController({
 			getCaptcha() {
@@ -6759,7 +6825,6 @@
 				setEnabled,
 				setGameAutoFishingBaitGrade,
 				setGameAutoFishingEnabled,
-				setIdleReloadMinutes,
 				setLoginMonitorEnabled,
 				setLoginMonitorConfig
 			},
