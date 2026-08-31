@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿OldLee
 // @namespace    arcane-angler-cast
-// @version      4.13
+// @version      4.18
 // @author       Codex
 // @description  支持脚本和游戏内置自动钓鱼、自动打 Boss 与定时休息
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/arcaneangler_cast.user.js
@@ -3023,7 +3023,7 @@
 			const savedSettings = JSON.parse(localStorage.getItem(GAME_AUTO_FISHING_SETTINGS_STORAGE_KEY));
 			if (!savedSettings || typeof savedSettings !== "object") return defaults;
 			return {
-				baitGrade: normalizeGameAutoFishingBaitGrade(savedSettings.baitGrade, defaults.baitGrade),
+				baitGrade: "auto",
 				enabled: savedSettings.enabled === true
 			};
 		} catch (error) {
@@ -3105,7 +3105,7 @@
 	function loadAutoBiomeSettings() {
 		const defaults = {
 			biomeWeight: 5,
-			enabled: false,
+			enabled: true,
 			includeMasteryXpBonus: true,
 			maxBiome: 0,
 			priorityOrder: [...DEFAULT_AUTO_BIOME_PRIORITY_ORDER]
@@ -3115,7 +3115,7 @@
 			if (!savedSettings || typeof savedSettings !== "object") return defaults;
 			return {
 				biomeWeight: normalizeAutoBiomeWeight(savedSettings.biomeWeight, defaults.biomeWeight),
-				enabled: savedSettings.enabled === true,
+				enabled: true,
 				includeMasteryXpBonus: savedSettings.includeMasteryXpBonus !== false,
 				maxBiome: normalizeAutoBiomeMaxBiome(savedSettings.maxBiome, defaults.maxBiome),
 				priorityOrder: Array.isArray(savedSettings.priorityOrder) ? normalizeAutoBiomePriorityOrder(savedSettings.priorityOrder) : migrateLegacyAutoBiomePriorityOrder(savedSettings)
@@ -3149,7 +3149,7 @@
 	}
 	function loadAutoBaitSettings() {
 		const defaults = {
-			enabled: false,
+			enabled: true,
 			goldBreezeBaitGrade: "default",
 			guildCompetitionBaitGrade: "low",
 			minimumQuantity: 100,
@@ -3162,7 +3162,7 @@
 			if (!savedSettings || typeof savedSettings !== "object") return defaults;
 			const legacyBaitGrade = normalizeAutoBaitGrade(savedSettings.baitGrade, defaults.regularBaitGrade);
 			return {
-				enabled: savedSettings.enabled === true,
+				enabled: true,
 				goldBreezeBaitGrade: normalizeAutoBaitGrade(savedSettings.goldBreezeBaitGrade, defaults.goldBreezeBaitGrade),
 				guildCompetitionBaitGrade: normalizeAutoBaitGrade(savedSettings.guildCompetitionBaitGrade, legacyBaitGrade),
 				minimumQuantity: normalizeAutoBaitMinimumQuantity(savedSettings.minimumQuantity, defaults.minimumQuantity),
@@ -3183,9 +3183,9 @@
 		}
 	}
 	function loadAutoBossSettings() {
-		const defaults = { enabled: false };
+		const defaults = { enabled: true };
 		try {
-			return { enabled: JSON.parse(localStorage.getItem(AUTO_BOSS_SETTINGS_STORAGE_KEY))?.enabled === true };
+			return { enabled: true };
 		} catch (error) {
 			console.warn("[自动打 Boss] 无法读取设置：", error);
 			return defaults;
@@ -4309,7 +4309,7 @@
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
 		let ui = null;
-		const { resetEarningsStats, setAutoBaitEnabled, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBossEnabled, setAutoBiomeEnabled, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomeMaxBiome, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingBaitGrade, setGameAutoFishingEnabled, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
+		const { resetEarningsStats, setAutoBaitGrade, setAutoBaitPurchaseSettings, setAutoBiomeMasteryXpBonusEnabled, setAutoBiomeMaxBiome, setAutoBiomePriorityOrder, setAutoBiomeWeight, setCaptchaBypassEnabled, setClickDelaySetting, setEnabled, setGameAutoFishingEnabled, setLoginMonitorEnabled, setLoginMonitorConfig } = actions;
 		function normalizeText(text) {
 			return String(text ?? "").replace(/\s+/g, " ").trim();
 		}
@@ -4458,42 +4458,16 @@
           <span id="auto-boss-status" class="value">未启用</span>
         </div>
 
-        <label class="option-row">
-          <span>自动换地图</span>
-          <span class="switch">
+        <label class='option-row'>
+          <span>使用内置自动钓鱼</span>
+          <span class='switch'>
             <input
-              id="auto-biome-toggle"
-              type="checkbox"
-              role="switch"
-              aria-label="自动换地图"
+              id='game-auto-fishing-toggle'
+              type='checkbox'
+              role='switch'
+              aria-label='使用内置自动钓鱼'
             />
-            <span class="switch-track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <label class="option-row">
-          <span>自动买鱼饵</span>
-          <span class="switch">
-            <input
-              id="auto-bait-toggle"
-              type="checkbox"
-              role="switch"
-              aria-label="自动买鱼饵"
-            />
-            <span class="switch-track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <label class="option-row">
-          <span>自动打 Boss</span>
-          <span class="switch">
-            <input
-              id="auto-boss-toggle"
-              type="checkbox"
-              role="switch"
-              aria-label="自动打 Boss"
-            />
-            <span class="switch-track" aria-hidden="true"></span>
+            <span class='switch-track' aria-hidden='true'></span>
           </span>
         </label>
 
@@ -4630,35 +4604,24 @@
         aria-labelledby="settings-tab"
         hidden
       >
-        <details class="settings-section">
-          <summary class="settings-title">自动钓鱼方式</summary>
+        <details class='settings-section'>
+          <summary class='settings-title'>自动出售鱼</summary>
 
-          <label class="option-row">
-            <span>使用游戏内置自动钓鱼</span>
-            <span class="switch">
-              <input
-                id="game-auto-fishing-toggle"
-                type="checkbox"
-                role="switch"
-                aria-label="使用游戏内置自动钓鱼"
-              />
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-
-          <label class="field">
-            <span class="field-label">游戏内置自动钓鱼鱼饵</span>
-            <select id="game-auto-fishing-bait-grade" class="input">
-              ${`
-              <option value="auto">自动选择（使用自动鱼饵设置）</option>
-              ${baitGradeOptions}
-        `}
-            </select>
-          </label>
-
-          <div class="field-help">
-            开启后不再模拟点击抛竿按钮，改由游戏内置功能接管；选择“自动选择”时遵循“自动鱼饵设置”的场景规则，明确选择某档鱼饵时则始终使用该档。关闭“自动买鱼饵”时保持当前鱼饵不处理。
+          <div class='field-help'>
+            将背包中稀有度为传奇的鱼按“基础价 × 泰坦数值”向上取整到万位后自动挂单出售，出售数量为该鱼的持有数量。
           </div>
+
+          <div class='field'>
+            <span class='field-label'>出售状态</span>
+            <span id='auto-sell-status' class='value' style='text-align: left;'>未出售</span>
+          </div>
+
+          <button id='sell-legendary-fish' class='toggle' type='button' style='background: #f59e0b; color: #1a202c;'>
+            出售传奇鱼
+          </button>
+          <button id='sell-mythic-fish' class='toggle' type='button' style='background: #ef4444; color: #ffffff;'>
+            出售神话鱼
+          </button>
         </details>
 
         <details class='settings-section'>
@@ -5049,7 +5012,6 @@
 				nextDelay: shadowRoot.querySelector("#next-delay"),
 				clickCount: shadowRoot.querySelector("#click-count"),
 				gameAutoFishingStatus: shadowRoot.querySelector("#game-auto-fishing-status"),
-				gameAutoFishingBaitGrade: shadowRoot.querySelector("#game-auto-fishing-bait-grade"),
 				gameAutoFishingToggle: shadowRoot.querySelector("#game-auto-fishing-toggle"),
 				shortDelayMinSeconds: shadowRoot.querySelector("#short-delay-min-seconds"),
 				shortDelayMaxSeconds: shadowRoot.querySelector("#short-delay-max-seconds"),
@@ -5057,7 +5019,6 @@
 				longDelayMaxSeconds: shadowRoot.querySelector("#long-delay-max-seconds"),
 				longDelayChancePercent: shadowRoot.querySelector("#long-delay-chance-percent"),
 				autoBiomeStatus: shadowRoot.querySelector("#auto-biome-status"),
-				autoBiomeToggle: shadowRoot.querySelector("#auto-biome-toggle"),
 				autoBiomePriorityList: shadowRoot.querySelector("#auto-biome-priority-list"),
 				autoBiomePriorityItems: shadowRoot.querySelectorAll("#auto-biome-priority-list .priority-item"),
 				autoBiomeCompetitionStatus: shadowRoot.querySelector("#auto-biome-competition-status"),
@@ -5067,9 +5028,7 @@
 				autoBiomeMaxBiome: shadowRoot.querySelector("#auto-biome-max-biome"),
 				autoBiomeUpdatedAt: shadowRoot.querySelector("#auto-biome-updated-at"),
 				autoBaitStatus: shadowRoot.querySelector("#auto-bait-status"),
-				autoBaitToggle: shadowRoot.querySelector("#auto-bait-toggle"),
 				autoBossStatus: shadowRoot.querySelector("#auto-boss-status"),
-				autoBossToggle: shadowRoot.querySelector("#auto-boss-toggle"),
 				autoBaitRegularGrade: shadowRoot.querySelector("#auto-bait-regular-grade"),
 				autoBaitPersonalGrade: shadowRoot.querySelector("#auto-bait-personal-grade"),
 				autoBaitGuildGrade: shadowRoot.querySelector("#auto-bait-guild-grade"),
@@ -5109,6 +5068,9 @@
 				exportFishImage: shadowRoot.querySelector("#export-fish-image"),
 				exportExoticFishZh: shadowRoot.querySelector('#export-exotic-fish-zh'),
 				exportExoticFishEn: shadowRoot.querySelector('#export-exotic-fish-en'),
+				sellLegendaryFish: shadowRoot.querySelector('#sell-legendary-fish'),
+				autoSellStatus: shadowRoot.querySelector('#auto-sell-status'),
+				sellMythicFish: shadowRoot.querySelector('#sell-mythic-fish'),
 				loginMonitorToggle: shadowRoot.querySelector("#login-monitor-toggle"),
 				loginMonitorMachineName: shadowRoot.querySelector("#login-monitor-machine-name"),
 				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
@@ -5150,17 +5112,29 @@
 					ui.exportExoticFishEn.textContent = '导出已有奇异（英）';
 				});
 			});
+			ui.sellLegendaryFish.addEventListener('click', () => {
+				if (ui.sellLegendaryFish.disabled) return;
+				ui.sellLegendaryFish.disabled = true;
+				ui.sellLegendaryFish.textContent = '正在出售传奇鱼';
+				autoSellFish('Legendary').finally(() => {
+					ui.sellLegendaryFish.disabled = false;
+					ui.sellLegendaryFish.textContent = '出售传奇鱼';
+				});
+			});
+			ui.sellMythicFish.addEventListener('click', () => {
+				if (ui.sellMythicFish.disabled) return;
+				ui.sellMythicFish.disabled = true;
+				ui.sellMythicFish.textContent = '正在出售神话鱼';
+				autoSellFish('Mythic').finally(() => {
+					ui.sellMythicFish.disabled = false;
+					ui.sellMythicFish.textContent = '出售神话鱼';
+				});
+			});
 			ui.gameAutoFishingToggle.addEventListener("change", (event) => {
 				setGameAutoFishingEnabled(event.currentTarget.checked);
 			});
-			ui.gameAutoFishingBaitGrade.addEventListener("change", (event) => {
-				setGameAutoFishingBaitGrade(event.currentTarget.value);
-			});
 			ui.captchaBypassToggle.addEventListener("change", (event) => {
 				setCaptchaBypassEnabled(event.currentTarget.checked);
-			});
-			ui.autoBiomeToggle.addEventListener("change", (event) => {
-				setAutoBiomeEnabled(event.currentTarget.checked);
 			});
 			ui.autoBiomeMasteryXpBonusToggle.addEventListener("change", (event) => {
 				setAutoBiomeMasteryXpBonusEnabled(event.currentTarget.checked);
@@ -5198,12 +5172,6 @@
 				const item = button?.closest(".priority-item");
 				if (!button || !item) return;
 				moveAutoBiomePriorityItem(item, Number(button.getAttribute("data-direction")));
-			});
-			ui.autoBaitToggle.addEventListener("change", (event) => {
-				setAutoBaitEnabled(event.currentTarget.checked);
-			});
-			ui.autoBossToggle.addEventListener("change", (event) => {
-				setAutoBossEnabled(event.currentTarget.checked);
 			});
 			ui.autoBaitRegularGrade.addEventListener("change", (event) => {
 				setAutoBaitGrade("regularBaitGrade", event.currentTarget.value);
@@ -5297,6 +5265,9 @@
 		}
 		function setStatus(text) {
 			if (ui?.status) ui.status.textContent = text;
+		}
+		function setAutoSellStatus(text) {
+			if (ui?.autoSellStatus) ui.autoSellStatus.textContent = text;
 		}
 		function setNextDelay(text) {
 			if (ui?.nextDelay) ui.nextDelay.textContent = text;
@@ -5530,10 +5501,8 @@
 		}
 
 		function renderAutoBiomeSettings() {
-			if (!ui?.autoBiomeToggle) return;
+			if (!ui?.autoBiomeMaxBiome) return;
 			const { autoBiomeCompetitionStatus, autoBiomeDailyQuestStatus, autoBiomeLastUpdatedAt, autoBiomeSettings, autoBiomeStatus } = getState();
-			ui.autoBiomeToggle.checked = autoBiomeSettings.enabled;
-			ui.autoBiomeToggle.setAttribute("aria-checked", autoBiomeSettings.enabled ? "true" : "false");
 			ui.autoBiomeMasteryXpBonusToggle.checked = autoBiomeSettings.includeMasteryXpBonus !== false;
 			ui.autoBiomeMasteryXpBonusToggle.setAttribute("aria-checked", autoBiomeSettings.includeMasteryXpBonus !== false ? "true" : "false");
 			ui.autoBiomeStatus.textContent = autoBiomeStatus;
@@ -5583,11 +5552,9 @@
 			ui.autoBiomeUpdatedAt.textContent = autoBiomeLastUpdatedAt ? new Date(autoBiomeLastUpdatedAt).toLocaleTimeString() : "等待接口数据";
 		}
 		function renderAutoBaitSettings() {
-			if (!ui?.autoBaitToggle) return;
+			if (!ui?.autoBaitRegularGrade) return;
 			const { autoBaitLastPurchasedAt, autoBaitSettings, autoBaitStatus, gameAutoFishingSettings, scheduleSettings } = getState();
 			const usesPaidGameAutoFishingBait = !["auto", "default"].includes(gameAutoFishingSettings.baitGrade) && (gameAutoFishingSettings.enabled || scheduleSettings.gameAutoFishingDuringRest);
-			ui.autoBaitToggle.checked = autoBaitSettings.enabled;
-			ui.autoBaitToggle.setAttribute("aria-checked", autoBaitSettings.enabled ? "true" : "false");
 			ui.autoBaitStatus.textContent = autoBaitStatus;
 			ui.autoBaitRegularGrade.value = autoBaitSettings.regularBaitGrade;
 			ui.autoBaitPersonalGrade.value = autoBaitSettings.personalCompetitionBaitGrade;
@@ -5601,10 +5568,8 @@
 			ui.autoBaitLastPurchasedAt.textContent = autoBaitLastPurchasedAt ? new Date(autoBaitLastPurchasedAt).toLocaleTimeString() : "暂无";
 		}
 		function renderAutoBossSettings() {
-			if (!ui?.autoBossToggle) return;
+			if (!ui?.autoBossStatus) return;
 			const { autoBossSettings, autoBossStatus } = getState();
-			ui.autoBossToggle.checked = autoBossSettings.enabled;
-			ui.autoBossToggle.setAttribute("aria-checked", autoBossSettings.enabled ? "true" : "false");
 			ui.autoBossStatus.textContent = autoBossStatus;
 		}
 		function renderGameAutoFishingSettings() {
@@ -5612,7 +5577,6 @@
 			const { gameAutoFishingSettings, gameAutoFishingStatus } = getState();
 			ui.gameAutoFishingToggle.checked = gameAutoFishingSettings.enabled;
 			ui.gameAutoFishingToggle.setAttribute("aria-checked", gameAutoFishingSettings.enabled ? "true" : "false");
-			ui.gameAutoFishingBaitGrade.value = gameAutoFishingSettings.baitGrade;
 			ui.gameAutoFishingStatus.textContent = gameAutoFishingStatus;
 		}
 		function renderClickDelaySettings() {
@@ -5686,6 +5650,7 @@
 			renderLoginMonitorSettings,
 			setNextDelay,
 			setStatus,
+			setAutoSellStatus,
 			updateClickCount
 		};
 	}
@@ -6187,30 +6152,11 @@
 			startRunLoop();
 		}
 	}
-	function setGameAutoFishingBaitGrade(nextGrade) {
-		gameAutoFishingSettings = {
-			...gameAutoFishingSettings,
-			baitGrade: normalizeGameAutoFishingBaitGrade(nextGrade, gameAutoFishingSettings.baitGrade)
-		};
-		saveGameAutoFishingSettings(gameAutoFishingSettings);
-		panel.renderGameAutoFishingSettings();
-		panel.renderAutoBaitSettings();
-		if (enabled && gameAutoFishing.getSnapshot().gameAutoFishingMayBeActive) autoBait?.prepareGameAutoFishing(gameAutoFishingSettings.baitGrade);
-	}
 	function setCaptchaBypassEnabled(nextEnabled) {
 		captchaBypassEnabled = Boolean(nextEnabled);
 		saveCaptchaBypassEnabled(captchaBypassEnabled);
 		panel.renderCaptchaBypassToggle();
 		captcha.handleBypassSettingChanged();
-	}
-	function setAutoBiomeEnabled(nextEnabled) {
-		autoBiomeSettings = {
-			...autoBiomeSettings,
-			enabled: Boolean(nextEnabled)
-		};
-		saveAutoBiomeSettings(autoBiomeSettings);
-		panel.renderAutoBiomeSettings();
-		handleAutomationStateChanged();
 	}
 	function setAutoBiomeWeight(nextWeight) {
 		autoBiomeSettings = {
@@ -6257,18 +6203,6 @@
 		saveAutoBaitSettings(autoBaitSettings);
 		panel.renderAutoBaitSettings();
 		handleAutomationStateChanged({ forceBait: true });
-	}
-	function setAutoBaitEnabled(nextEnabled) {
-		updateAutoBaitSettings({ enabled: Boolean(nextEnabled) });
-	}
-	function setAutoBossEnabled(nextEnabled) {
-		autoBossSettings = {
-			...autoBossSettings,
-			enabled: Boolean(nextEnabled)
-		};
-		saveAutoBossSettings(autoBossSettings);
-		panel.renderAutoBossSettings();
-		autoBoss?.handleStateChanged();
 	}
 	function setAutoBaitGrade(field, nextGrade) {
 		if (!AUTO_BAIT_GRADE_FIELDS.has(field)) return;
@@ -6661,6 +6595,80 @@
 		}
 	}
 
+	async function createMarketplaceListingRequest(payload) {
+		if (unsafeWindow.ApiService && typeof unsafeWindow.ApiService.createMarketplaceListing === 'function') {
+			return unsafeWindow.ApiService.createMarketplaceListing(payload);
+		}
+		const response = await window.fetch('/api/marketplace/list', {
+			method: 'POST',
+			credentials: 'include',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		});
+		if (!response.ok) {
+			throw new Error('请求失败：' + response.status);
+		}
+		return response.json();
+	}
+
+	function computeAutoSellPrice(rarity, value) {
+		if (rarity === 'Mythic') {
+			return Math.max(300000, Math.ceil(value / 100000) * 100000);
+		}
+		return Math.max(20000, Math.ceil(value / 10000) * 10000);
+	}
+
+	async function autoSellFish(rarity) {
+		const rarityLabel = rarity === 'Mythic' ? '神话' : '传奇';
+		try {
+			const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
+			if (!playerResponse.ok) throw new Error('读取背包失败');
+			const playerData = await playerResponse.json();
+			const inventory = playerData?.inventory || [];
+			const fishList = inventory.filter((item) => item.rarity === rarity && !item.isLocked && !item.isFavorite);
+			if (!fishList.length) {
+				const emptyMessage = '没有可出售的' + rarityLabel + '鱼';
+				panel?.setAutoSellStatus(emptyMessage);
+				if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(emptyMessage, 'info');
+				return { sold: 0, failed: 0 };
+			}
+			let sold = 0;
+			let failed = 0;
+			for (let i = 0; i < fishList.length; i++) {
+				const item = fishList[i];
+				const baseGold = Number(item.baseGold || item.gold) || 0;
+				const titanBonus = Number(item.titanBonus) || 1;
+				const pricePerUnit = computeAutoSellPrice(rarity, baseGold * titanBonus);
+				const quantity = Math.max(1, Math.floor(Number(item.count) || 0));
+				const name = item.name || item.fishName || '未知';
+				const biomeCode = item.biomeId ? 'B' + item.biomeId : '?';
+				const displayName = exportFishGetChineseName(name);
+				const priceWan = pricePerUnit / 10000;
+				panel?.setAutoSellStatus('正在出售' + rarityLabel + '鱼 ' + (i + 1) + '/' + fishList.length + '：' + biomeCode + ' ' + displayName + ' ' + priceWan + '万');
+				try {
+					await createMarketplaceListingRequest({ itemType: 'fish', itemId: item.id, pricePerUnit: pricePerUnit, quantity: quantity });
+					sold += 1;
+				} catch (e) {
+					failed += 1;
+					console.error('[自动出售鱼] 出售失败:', name, e);
+				}
+				if (i < fishList.length - 1) {
+					await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+				}
+			}
+			const summary = rarityLabel + '鱼出售完成：成功 ' + sold + ' 条，失败 ' + failed + ' 条';
+			panel?.setAutoSellStatus(summary);
+			if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(summary, sold === fishList.length ? 'success' : 'error');
+			return { sold: sold, failed: failed };
+		} catch (e) {
+			console.error('[自动出售鱼] 出售失败:', e);
+			const errorMessage = '出售失败：' + e.message;
+			panel?.setAutoSellStatus(errorMessage);
+			if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(errorMessage, 'error');
+			return { sold: 0, failed: 0 };
+		}
+	}
+
 	async function copyTextToClipboard(text) {
 		const doc = unsafeWindow.document || document;
 		const nav = unsafeWindow.navigator || navigator;
@@ -6811,11 +6819,8 @@
 		panel = createPanelController({
 			actions: {
 				resetEarningsStats,
-				setAutoBaitEnabled,
 				setAutoBaitGrade,
 				setAutoBaitPurchaseSettings,
-				setAutoBossEnabled,
-				setAutoBiomeEnabled,
 				setAutoBiomeMasteryXpBonusEnabled,
 				setAutoBiomeMaxBiome,
 				setAutoBiomePriorityOrder,
@@ -6823,7 +6828,6 @@
 				setCaptchaBypassEnabled,
 				setClickDelaySetting,
 				setEnabled,
-				setGameAutoFishingBaitGrade,
 				setGameAutoFishingEnabled,
 				setLoginMonitorEnabled,
 				setLoginMonitorConfig
