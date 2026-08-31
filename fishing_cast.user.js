@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.20
+// @version      4.21
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -5654,7 +5654,7 @@
 		const isNoteworthyGear = Boolean(result.gear) && (gearRarity === "exotic" || gearRarity === "arcane");
 		if (!isNoteworthyFish && !isNoteworthyGear) return;
 		const rarity = isNoteworthyFish ? (fishRarity === "exotic" ? "奇异" : "奥术") : (gearRarity === "exotic" ? "奇异" : "奥术");
-		const name = isNoteworthyFish ? String(result.fish?.name ?? "").trim() : String(result.gear?.name ?? "").trim();
+		const name = isNoteworthyFish ? exportFishGetChineseName(String(result.fish?.name ?? "").trim()) : String(result.gear?.name ?? "").trim();
 		const verb = isNoteworthyFish ? "钓到" : "获得";
 		const kind = isNoteworthyFish ? "鱼" : "装备";
 		let detail = "";
