@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.29
+// @version      4.31
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6754,7 +6754,7 @@
 				const key = order.fish_name + '|' + order.fish_biome_id;
 				const desired = desiredByKey.get(key);
 				if (!desired) {
-					panel?.setAutoSellStatus('正在取消非专精所需买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + order.price_per_unit + ' ' + order.quantity_wanted);
+					panel?.setAutoSellStatus('正在取消非专精所需买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + formatBuyOrderPrice(order.price_per_unit) + ' ' + formatNumberWithCommas(order.quantity_wanted));
 					try {
 						await cancelBuyOrderRequest(order.id);
 						cancelled += 1;
@@ -6769,7 +6769,7 @@
 					satisfiedKeys.add(key);
 					continue;
 				}
-				panel?.setAutoSellStatus('正在取消需调整的买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + order.price_per_unit + ' ' + order.quantity_wanted);
+				panel?.setAutoSellStatus('正在取消需调整的买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + formatBuyOrderPrice(order.price_per_unit) + ' ' + formatNumberWithCommas(order.quantity_wanted));
 				try {
 					await cancelBuyOrderRequest(order.id);
 					cancelled += 1;
@@ -6783,7 +6783,7 @@
 			for (const desired of desiredByKey.values()) {
 				const key = desired.fishName + '|' + desired.fishBiomeId;
 				if (satisfiedKeys.has(key)) continue;
-				panel?.setAutoSellStatus('正在创建买单：B' + desired.fishBiomeId + ' ' + exportFishGetChineseName(desired.fishName) + ' ' + desired.price + ' ' + desired.remaining);
+				panel?.setAutoSellStatus('正在创建买单：B' + desired.fishBiomeId + ' ' + exportFishGetChineseName(desired.fishName) + ' ' + formatBuyOrderPrice(desired.price) + ' ' + formatNumberWithCommas(desired.remaining));
 				try {
 					await createBuyOrderRequest({
 						fishName: desired.fishName,
@@ -6840,6 +6840,15 @@
 		if (rarity === 'Mythic') return Math.max(300000, Math.ceil(baseGold / 100000) * 100000);
 		if (rarity === 'Exotic') return 1500000;
 		return null;
+	}
+
+	function formatNumberWithCommas(value) {
+		return String(Math.floor(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+	}
+
+	function formatBuyOrderPrice(price) {
+		const value = Number(price) || 0;
+		return value >= 10000 ? (value / 10000) + '万' : formatNumberWithCommas(value);
 	}
 
 	async function fetchMasteryRequiredFish() {
