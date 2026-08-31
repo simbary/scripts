@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.19
+// @version      4.20
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -62,12 +62,7 @@
 		return "regular";
 	}
 	function getBaitGradeForBiome(biomeId, autoBaitSettings, competitionBiomes, automationState = {}) {
-		const regularBaitGrade = autoBaitSettings?.regularBaitGrade ?? autoBaitSettings?.baitGrade ?? "low";
-		if (automationState.autoBiomeWeatherByBiome?.[biomeId]?.weather === GOLD_BREEZE_WEATHER$1) return autoBaitSettings?.goldBreezeBaitGrade ?? "default";
-		const context = getAutoBaitContext(biomeId, competitionBiomes);
-		if (context === "guild") return autoBaitSettings?.guildCompetitionBaitGrade ?? regularBaitGrade;
-		if (context === "personal") return autoBaitSettings?.personalCompetitionBaitGrade ?? regularBaitGrade;
-		return regularBaitGrade;
+		return autoBaitSettings?.baitGrade ?? 'low';
 	}
 	function shouldPurchaseBait(quantity, minimumQuantity, baitGrade) {
 		return baitGrade !== "default" && normalizeQuantity$1(quantity) < normalizeQuantity$1(minimumQuantity);
@@ -1009,7 +1004,7 @@
 				weatherByBiome
 			});
 			const chasingGoldBreeze = goldBreezeEnabled && target?.weather === GOLD_BREEZE_WEATHER;
-			if (chasingGoldBreeze) target.baitId = getBaitIdForBiome(target.biomeId, autoBaitSettings?.goldBreezeBaitGrade ?? "default");
+			if (chasingGoldBreeze) target.baitId = getBaitIdForBiome(target.biomeId, autoBaitSettings?.baitGrade ?? 'low');
 			if (!target) {
 				setStatus("没有可用的已解锁地图数据");
 				await notifyBiomeReady(normalizeBiomeId$1(player.currentBiome));
@@ -3150,28 +3145,21 @@
 	function loadAutoBaitSettings() {
 		const defaults = {
 			enabled: true,
-			goldBreezeBaitGrade: "default",
-			guildCompetitionBaitGrade: "low",
+			baitGrade: 'low',
 			minimumQuantity: 100,
-			personalCompetitionBaitGrade: "low",
-			purchaseQuantity: 100,
-			regularBaitGrade: "low"
+			purchaseQuantity: 100
 		};
 		try {
 			const savedSettings = JSON.parse(localStorage.getItem(AUTO_BAIT_SETTINGS_STORAGE_KEY));
-			if (!savedSettings || typeof savedSettings !== "object") return defaults;
-			const legacyBaitGrade = normalizeAutoBaitGrade(savedSettings.baitGrade, defaults.regularBaitGrade);
+			if (!savedSettings || typeof savedSettings !== 'object') return defaults;
 			return {
 				enabled: true,
-				goldBreezeBaitGrade: normalizeAutoBaitGrade(savedSettings.goldBreezeBaitGrade, defaults.goldBreezeBaitGrade),
-				guildCompetitionBaitGrade: normalizeAutoBaitGrade(savedSettings.guildCompetitionBaitGrade, legacyBaitGrade),
+				baitGrade: normalizeAutoBaitGrade(savedSettings.baitGrade ?? savedSettings.regularBaitGrade, defaults.baitGrade),
 				minimumQuantity: normalizeAutoBaitMinimumQuantity(savedSettings.minimumQuantity, defaults.minimumQuantity),
-				personalCompetitionBaitGrade: normalizeAutoBaitGrade(savedSettings.personalCompetitionBaitGrade, legacyBaitGrade),
-				purchaseQuantity: normalizeAutoBaitPurchaseQuantity(savedSettings.purchaseQuantity, defaults.purchaseQuantity),
-				regularBaitGrade: normalizeAutoBaitGrade(savedSettings.regularBaitGrade, legacyBaitGrade)
+				purchaseQuantity: normalizeAutoBaitPurchaseQuantity(savedSettings.purchaseQuantity, defaults.purchaseQuantity)
 			};
 		} catch (error) {
-			console.warn("[自动买鱼饵] 无法读取设置：", error);
+			console.warn('[自动买鱼饵] 无法读取设置：', error);
 			return defaults;
 		}
 	}
@@ -4642,30 +4630,9 @@
         <details class="settings-section">
           <summary class="settings-title">自动买鱼饵</summary>
 
-          <label class="field">
-            <span class="field-label">常规鱼饵</span>
-            <select id="auto-bait-regular-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">个人赛鱼饵</span>
-            <select id="auto-bait-personal-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">公会赛鱼饵</span>
-            <select id="auto-bait-guild-grade" class="input">
-              ${baitGradeOptions}
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">金风鱼饵</span>
-            <select id="auto-bait-gold-breeze-grade" class="input">
+          <label class='field'>
+            <span class='field-label'>选择鱼饵</span>
+            <select id='auto-bait-grade' class='input'>
               ${baitGradeOptions}
             </select>
           </label>
@@ -4695,7 +4662,7 @@
             </div>
 
             <div class="field-help">
-              金风天气优先使用独立鱼饵设置，默认为免费默认饵；其他天气根据当前地图是否为个人赛或公会赛地图选择鱼饵。游戏内置自动钓鱼选择“自动选择”时也遵循这些设置。付费鱼饵库存低于设置值时购买，阈值按 100 的倍数保存。
+            统一使用所选鱼饵；默认饵无限不购买，付费鱼饵库存低于设置值时自动购买，阈值按 100 的倍数保存。
             </div>
           </div>
 
@@ -5029,10 +4996,7 @@
 				autoBiomeUpdatedAt: shadowRoot.querySelector("#auto-biome-updated-at"),
 				autoBaitStatus: shadowRoot.querySelector("#auto-bait-status"),
 				autoBossStatus: shadowRoot.querySelector("#auto-boss-status"),
-				autoBaitRegularGrade: shadowRoot.querySelector("#auto-bait-regular-grade"),
-				autoBaitPersonalGrade: shadowRoot.querySelector("#auto-bait-personal-grade"),
-				autoBaitGuildGrade: shadowRoot.querySelector("#auto-bait-guild-grade"),
-				autoBaitGoldBreezeGrade: shadowRoot.querySelector("#auto-bait-gold-breeze-grade"),
+				autoBaitGrade: shadowRoot.querySelector('#auto-bait-grade'),
 				autoBaitPurchaseSettings: shadowRoot.querySelector("#auto-bait-purchase-settings"),
 				autoBaitMinimumQuantity: shadowRoot.querySelector("#auto-bait-minimum-quantity"),
 				autoBaitPurchaseQuantity: shadowRoot.querySelector("#auto-bait-purchase-quantity"),
@@ -5173,17 +5137,8 @@
 				if (!button || !item) return;
 				moveAutoBiomePriorityItem(item, Number(button.getAttribute("data-direction")));
 			});
-			ui.autoBaitRegularGrade.addEventListener("change", (event) => {
-				setAutoBaitGrade("regularBaitGrade", event.currentTarget.value);
-			});
-			ui.autoBaitPersonalGrade.addEventListener("change", (event) => {
-				setAutoBaitGrade("personalCompetitionBaitGrade", event.currentTarget.value);
-			});
-			ui.autoBaitGuildGrade.addEventListener("change", (event) => {
-				setAutoBaitGrade("guildCompetitionBaitGrade", event.currentTarget.value);
-			});
-			ui.autoBaitGoldBreezeGrade.addEventListener("change", (event) => {
-				setAutoBaitGrade("goldBreezeBaitGrade", event.currentTarget.value);
+			ui.autoBaitGrade.addEventListener('change', (event) => {
+				setAutoBaitGrade(event.currentTarget.value);
 			});
 			ui.autoBaitMinimumQuantity.addEventListener("input", () => {
 				scheduleAutoBaitPurchaseSettingsSave();
@@ -5552,15 +5507,12 @@
 			ui.autoBiomeUpdatedAt.textContent = autoBiomeLastUpdatedAt ? new Date(autoBiomeLastUpdatedAt).toLocaleTimeString() : "等待接口数据";
 		}
 		function renderAutoBaitSettings() {
-			if (!ui?.autoBaitRegularGrade) return;
+			if (!ui?.autoBaitGrade) return;
 			const { autoBaitLastPurchasedAt, autoBaitSettings, autoBaitStatus, gameAutoFishingSettings, scheduleSettings } = getState();
 			const usesPaidGameAutoFishingBait = !["auto", "default"].includes(gameAutoFishingSettings.baitGrade) && (gameAutoFishingSettings.enabled || scheduleSettings.gameAutoFishingDuringRest);
 			ui.autoBaitStatus.textContent = autoBaitStatus;
-			ui.autoBaitRegularGrade.value = autoBaitSettings.regularBaitGrade;
-			ui.autoBaitPersonalGrade.value = autoBaitSettings.personalCompetitionBaitGrade;
-			ui.autoBaitGuildGrade.value = autoBaitSettings.guildCompetitionBaitGrade;
-			ui.autoBaitGoldBreezeGrade.value = autoBaitSettings.goldBreezeBaitGrade;
-			ui.autoBaitPurchaseSettings.hidden = autoBaitSettings.regularBaitGrade === "default" && autoBaitSettings.personalCompetitionBaitGrade === "default" && autoBaitSettings.guildCompetitionBaitGrade === "default" && autoBaitSettings.goldBreezeBaitGrade === "default" && !usesPaidGameAutoFishingBait;
+			ui.autoBaitGrade.value = autoBaitSettings.baitGrade;
+			ui.autoBaitPurchaseSettings.hidden = autoBaitSettings.baitGrade === 'default' && !usesPaidGameAutoFishingBait;
 			if (!autoBaitPurchaseSettingsDirty) {
 				ui.autoBaitMinimumQuantity.value = String(autoBaitSettings.minimumQuantity);
 				ui.autoBaitPurchaseQuantity.value = String(autoBaitSettings.purchaseQuantity);
@@ -5688,12 +5640,6 @@
 		"longDelayMinSeconds",
 		"shortDelayMaxSeconds",
 		"shortDelayMinSeconds"
-	]);
-	var AUTO_BAIT_GRADE_FIELDS = new Set([
-		"goldBreezeBaitGrade",
-		"guildCompetitionBaitGrade",
-		"personalCompetitionBaitGrade",
-		"regularBaitGrade"
 	]);
 	function handleWeatherResponse(response) {
 		if (autoBiome) autoBiome.handleWeatherResponse(response);
@@ -6204,9 +6150,8 @@
 		panel.renderAutoBaitSettings();
 		handleAutomationStateChanged({ forceBait: true });
 	}
-	function setAutoBaitGrade(field, nextGrade) {
-		if (!AUTO_BAIT_GRADE_FIELDS.has(field)) return;
-		updateAutoBaitSettings({ [field]: normalizeAutoBaitGrade(nextGrade, autoBaitSettings[field]) });
+	function setAutoBaitGrade(nextGrade) {
+		updateAutoBaitSettings({ baitGrade: normalizeAutoBaitGrade(nextGrade, autoBaitSettings.baitGrade) });
 	}
 	function setAutoBaitPurchaseSettings({ minimumQuantity, purchaseQuantity }) {
 		updateAutoBaitSettings({
