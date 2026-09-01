@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.31
+// @version      4.36
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6592,12 +6592,13 @@
 		const rarityLabel = ({ Common: '普通', Epic: '史诗', Legendary: '传奇', Mythic: '神话' })[rarity] || rarity;
 		const reportProgress = hooks?.reportProgress;
 		const reportError = hooks?.reportError;
+		const requiredKeys = hooks?.requiredKeys;
 		try {
 			const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
 			if (!playerResponse.ok) throw new Error('读取背包失败');
 			const playerData = await playerResponse.json();
 			const inventory = playerData?.inventory || [];
-			const fishList = inventory.filter((item) => item.rarity === rarity && !item.isLocked && !item.isFavorite);
+			const fishList = inventory.filter((item) => item.rarity === rarity && !item.isLocked && !item.isFavorite && !(requiredKeys?.has(item.name + '|' + item.biomeId)));
 			if (!fishList.length) {
 				if (!reportProgress) {
 					const emptyMessage = '没有可出售的' + rarityLabel + '鱼';
@@ -6629,11 +6630,10 @@
 				const biomeCode = item.biomeId ? 'B' + item.biomeId : '?';
 				const displayName = exportFishGetChineseName(name);
 				const priceText = (rarity === 'Legendary' || rarity === 'Mythic') ? (pricePerUnit / 10000) + '万' : String(pricePerUnit);
-				const detailText = biomeCode + ' ' + displayName + ' ' + priceText;
 				if (reportProgress) {
-					reportProgress(detailText);
+					reportProgress({ rarity: rarity, biomeId: item.biomeId, name: name, price: pricePerUnit, quantity: quantity });
 				} else {
-					panel?.setAutoSellStatus('正在出售' + rarityLabel + '鱼 ' + (i + 1) + '/' + fishList.length + '：' + detailText);
+					panel?.setAutoSellStatus('正在出售' + rarityLabel + '鱼 ' + (i + 1) + '/' + fishList.length + '：' + biomeCode + ' ' + displayName + ' ' + priceText + ' ' + quantity + '条');
 				}
 				try {
 					const matchingListings = (rarity === 'Common' || rarity === 'Epic')
@@ -6675,27 +6675,54 @@
 	const IDLE_SELL_RARITIES = ['Common', 'Epic', 'Legendary', 'Mythic'];
 
 	async function sellAllIdleFish() {
-		let total = 0;
+		let requiredKeys = new Set();
+		let masteryCancelList = [];
+		try {
+			const requiredData = await fetchMasteryRequiredFish();
+			requiredKeys = new Set((requiredData?.requiredFish || []).map((fish) => fish.fishName + '|' + fish.biomeId));
+			const listingsResponse = await window.fetch('/api/marketplace/my-listings', { credentials: 'include' });
+			if (listingsResponse.ok) {
+				const listingsData = await listingsResponse.json();
+				masteryCancelList = (listingsData?.listings || []).filter((listing) => listing.item_type === 'fish' && requiredKeys.has(listing.fish_name + '|' + listing.fish_biome_id));
+			}
+		} catch (e) {
+			console.warn('[市场买卖单] 检查专精鱼卖单失败：', e);
+		}
+
+		let sellTotal = 0;
 		try {
 			const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
 			if (playerResponse.ok) {
 				const playerData = await playerResponse.json();
 				const inventory = playerData?.inventory || [];
-				total = inventory.filter((item) => IDLE_SELL_RARITIES.indexOf(item.rarity) !== -1 && !item.isLocked && !item.isFavorite).length;
+				sellTotal = inventory.filter((item) => IDLE_SELL_RARITIES.indexOf(item.rarity) !== -1 && !item.isLocked && !item.isFavorite && !requiredKeys.has(item.name + '|' + item.biomeId)).length;
 			}
 		} catch (e) {
 			console.warn('[市场买卖单] 预统计待售鱼失败：', e);
 		}
-		const rarityLabelMap = { Common: '普通', Epic: '史诗', Legendary: '传奇', Mythic: '神话' };
-		let completed = 0;
+
+		const totalOps = masteryCancelList.length + sellTotal;
+		let step = 0;
+
+		for (const listing of masteryCancelList) {
+			step += 1;
+			panel?.setAutoSellStatus(formatMarketProgressStatus('正在出售闲置鱼', step + '/' + totalOps, '撤销', listing.fish_rarity, listing.fish_biome_id, listing.fish_name, listing.price_per_unit, listing.fish_quantity));
+			try {
+				await cancelMarketplaceListingRequest(listing.id);
+			} catch (e) {
+				console.error('[市场买卖单] 撤销专精鱼卖单失败:', listing.id, listing.fish_name, e);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+		}
+
 		const results = [];
 		for (let i = 0; i < IDLE_SELL_RARITIES.length; i++) {
 			const rarity = IDLE_SELL_RARITIES[i];
 			const result = await autoSellFish(rarity, {
-				reportProgress: (detailText) => {
-					completed += 1;
-					const counter = total > 0 ? (completed + '/' + total) : String(completed);
-					panel?.setAutoSellStatus('正在出售闲置鱼 ' + counter + '：' + rarityLabelMap[rarity] + ' ' + detailText);
+				requiredKeys: requiredKeys,
+				reportProgress: (itemInfo) => {
+					step += 1;
+					panel?.setAutoSellStatus(formatMarketProgressStatus('正在出售闲置鱼', step + '/' + totalOps, '创建', itemInfo.rarity, itemInfo.biomeId, itemInfo.name, itemInfo.price, itemInfo.quantity));
 				},
 				reportError: (message) => {
 					panel?.setAutoSellStatus(message);
@@ -6745,31 +6772,35 @@
 			const ordersData = await fetchMyBuyOrders();
 			const orders = ordersData?.orders || [];
 			const satisfiedKeys = new Set();
-			let cancelled = 0;
-			let created = 0;
-			let failed = 0;
-
+			const cancelOps = [];
 			for (const order of orders) {
 				if (order.fish_rarity === 'Arcane') continue;
 				const key = order.fish_name + '|' + order.fish_biome_id;
 				const desired = desiredByKey.get(key);
 				if (!desired) {
-					panel?.setAutoSellStatus('正在取消非专精所需买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + formatBuyOrderPrice(order.price_per_unit) + ' ' + formatNumberWithCommas(order.quantity_wanted));
-					try {
-						await cancelBuyOrderRequest(order.id);
-						cancelled += 1;
-					} catch (e) {
-						failed += 1;
-						console.error('[市场买卖单] 取消购买挂单失败:', order.id, order.fish_name, e);
-					}
-					await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+					cancelOps.push(order);
 					continue;
 				}
 				if (Number(order.quantity_wanted) === desired.remaining && !satisfiedKeys.has(key)) {
 					satisfiedKeys.add(key);
 					continue;
 				}
-				panel?.setAutoSellStatus('正在取消需调整的买单：B' + (order.fish_biome_id ?? '?') + ' ' + exportFishGetChineseName(order.fish_name) + ' ' + formatBuyOrderPrice(order.price_per_unit) + ' ' + formatNumberWithCommas(order.quantity_wanted));
+				cancelOps.push(order);
+			}
+			const createOps = [];
+			desiredByKey.forEach((desired) => {
+				if (!satisfiedKeys.has(desired.fishName + '|' + desired.fishBiomeId)) createOps.push(desired);
+			});
+
+			const totalOps = cancelOps.length + createOps.length;
+			let step = 0;
+			let cancelled = 0;
+			let created = 0;
+			let failed = 0;
+
+			for (const order of cancelOps) {
+				step += 1;
+				panel?.setAutoSellStatus(formatMarketProgressStatus('正在调整专精买单', step + '/' + totalOps, '撤销', order.fish_rarity, order.fish_biome_id, order.fish_name, order.price_per_unit, order.quantity_wanted));
 				try {
 					await cancelBuyOrderRequest(order.id);
 					cancelled += 1;
@@ -6780,10 +6811,9 @@
 				await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
 			}
 
-			for (const desired of desiredByKey.values()) {
-				const key = desired.fishName + '|' + desired.fishBiomeId;
-				if (satisfiedKeys.has(key)) continue;
-				panel?.setAutoSellStatus('正在创建买单：B' + desired.fishBiomeId + ' ' + exportFishGetChineseName(desired.fishName) + ' ' + formatBuyOrderPrice(desired.price) + ' ' + formatNumberWithCommas(desired.remaining));
+			for (const desired of createOps) {
+				step += 1;
+				panel?.setAutoSellStatus(formatMarketProgressStatus('正在调整专精买单', step + '/' + totalOps, '创建', desired.rarity, desired.fishBiomeId, desired.fishName, desired.price, desired.remaining));
 				try {
 					await createBuyOrderRequest({
 						fishName: desired.fishName,
@@ -6846,9 +6876,16 @@
 		return String(Math.floor(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 	}
 
-	function formatBuyOrderPrice(price) {
+	function formatMarketPrice(price) {
 		const value = Number(price) || 0;
-		return value >= 10000 ? (value / 10000) + '万' : formatNumberWithCommas(value);
+		return value >= 10000 ? (value / 10000) + '万' : formatNumberWithCommas(value) + '元';
+	}
+
+	function formatMarketProgressStatus(action, progress, operation, rarity, biomeId, fishName, price, quantity) {
+		const rarityLabel = ({ Common: '普通', Uncommon: '罕见', Fine: '精良', Rare: '稀有', Epic: '史诗', Legendary: '传说', Mythic: '神话', Exotic: '奇异', Arcane: '奥术' })[rarity] || rarity || '';
+		const biomeCode = biomeId != null ? 'B' + biomeId : 'B?';
+		const displayName = exportFishGetChineseName(fishName);
+		return action + ' ' + progress + '：' + operation + ' ' + rarityLabel + ' ' + biomeCode + ' ' + displayName + ' ' + formatMarketPrice(price) + ' ' + formatNumberWithCommas(quantity) + '条';
 	}
 
 	async function fetchMasteryRequiredFish() {
