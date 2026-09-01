@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.40
+// @version      4.52
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -1218,6 +1218,29 @@
 	function getErrorMessage(error) {
 		return String(error?.message ?? error ?? "未知错误");
 	}
+	async function claimAnomalyRewardsFromHistory() {
+		const api = unsafeWindow.ApiService;
+		if (!api || typeof api.getAnomalyHistory !== "function" || typeof api.claimAnomalyRewards !== "function") return { claimed: 0, skipped: true };
+		try {
+			const data = await api.getAnomalyHistory();
+			const history = Array.isArray(data?.history) ? data.history : [];
+			const claimable = history.filter((entry) => entry?.id != null && entry.status === "defeated" && Number(entry.rewards_claimed) === 0);
+			let claimed = 0;
+			for (const entry of claimable) {
+				try {
+					await api.claimAnomalyRewards(entry.id);
+					claimed += 1;
+					console.info(`[自动打 Boss] 已领取 ${entry.anomaly_name ?? entry.id} 的奖励`);
+				} catch (error) {
+					console.warn(`[自动打 Boss] 领取 ${entry.id} 奖励失败：`, error);
+				}
+			}
+			return { claimed };
+		} catch (error) {
+			console.warn("[自动打 Boss] 检查历史奖励失败：", error);
+			return { claimed: 0, error };
+		}
+	}
 	function createAutoBossController({ getPlayer, getState, onStateChange }) {
 		let timer = null;
 		let checking = false;
@@ -1227,6 +1250,7 @@
 		let lastDamage = 0;
 		let lastStat = null;
 		let reevaluateAfterCurrent = false;
+		let rewardClaimTimer = null;
 		let revision = 0;
 		function notifyStateChanged() {
 			onStateChange?.();
@@ -1251,6 +1275,14 @@
 					}
 				});
 			}, delay);
+		}
+		function scheduleRewardClaimCheck() {
+			window.clearTimeout(rewardClaimTimer);
+			rewardClaimTimer = window.setTimeout(() => {
+				rewardClaimTimer = null;
+				if (!getState().enabled || !getState().autoBossSettings.enabled) return;
+				claimAnomalyRewardsFromHistory().catch((error) => console.warn("[自动打 Boss] 奖励领取异常：", error));
+			}, 10 * 60 * 1000);
 		}
 		function getSnapshot() {
 			return {
@@ -1309,6 +1341,7 @@
 				lastDamage = normalizeNumber(result.attack.finalDamage);
 				lastStat = stat;
 				setStatus(result.anomaly?.defeated ? `已击败 ${result.anomaly.name ?? "世界 Boss"}` : `${statLabel}造成 ${lastDamage.toLocaleString()} 伤害`);
+				scheduleRewardClaimCheck();
 				schedule(CONFIG.autoBossAttackInterval);
 			} catch (error) {
 				console.error("[自动打 Boss] 攻击失败：", error);
@@ -1330,11 +1363,15 @@
 			const { autoBossSettings, enabled } = getState();
 			if (!autoBossSettings.enabled) {
 				reevaluateAfterCurrent = false;
+				window.clearTimeout(rewardClaimTimer);
+				rewardClaimTimer = null;
 				setStatus("未启用");
 				return;
 			}
 			if (!enabled) {
 				reevaluateAfterCurrent = false;
+				window.clearTimeout(rewardClaimTimer);
+				rewardClaimTimer = null;
 				setStatus("脚本启动后自动攻击");
 				return;
 			}
@@ -2014,6 +2051,7 @@
 			fish: 0,
 			gold: 0,
 			fishGold: 0,
+			treasureGold: 0,
 			baitCost: 0,
 			unknownBaitCostCasts: 0,
 			xp: 0,
@@ -2051,6 +2089,7 @@
 			fish: toNonNegativeNumber(source?.fish),
 			gold: toNonNegativeNumber(source?.gold),
 			fishGold: toNonNegativeNumber(source?.fishGold),
+			treasureGold: toNonNegativeNumber(source?.treasureGold),
 			baitCost: toNonNegativeNumber(source?.baitCost),
 			unknownBaitCostCasts: toNonNegativeNumber(source?.unknownBaitCostCasts),
 			xp: toNonNegativeNumber(source?.xp),
@@ -2066,18 +2105,21 @@
 	function normalizeEarningsContext(context) {
 		if (!context || typeof context !== "object") return null;
 		const biomeId = normalizeDimensionId(context.biomeId);
+		const castMethod = context.castMethod;
+		if (!biomeId || (castMethod !== "auto" && castMethod !== "manual")) return null;
 		const baitId = normalizeDimensionId(context.baitId);
-		if (!biomeId || !baitId) return null;
 		return {
 			biomeId,
 			biomeName: String(context.biomeName ?? "").trim() || `地图 ${biomeId}`,
+			castMethod,
+			castMethodLabel: castMethod === "auto" ? "自动抛竿" : "手动抛竿",
 			baitId,
 			baitName: String(context.baitName ?? "").trim() || baitId,
 			baitPrice: toNullableNonNegativeNumber(context.baitPrice)
 		};
 	}
 	function createBreakdownKey(context) {
-		return JSON.stringify([context.biomeId, context.baitId]);
+		return JSON.stringify([context.biomeId, context.castMethod]);
 	}
 	function normalizeBreakdowns(breakdowns) {
 		if (!breakdowns || typeof breakdowns !== "object") return {};
@@ -2133,6 +2175,7 @@
 			fish: isFish ? count : 0,
 			gold: toNonNegativeNumber(result.goldGained),
 			fishGold: isFish ? toNonNegativeNumber(result.fish?.baseGold) * count : 0,
+			treasureGold: isTreasure ? toNonNegativeNumber(result.goldGained) : 0,
 			baitCost: baitPrice ?? 0,
 			unknownBaitCostCasts: hasBait && baitPrice === null ? 1 : 0,
 			xp: toNonNegativeNumber(result.xpGained),
@@ -2151,6 +2194,7 @@
 			fish: summary.fish + castEarnings.fish,
 			gold: summary.gold + castEarnings.gold,
 			fishGold: summary.fishGold + castEarnings.fishGold,
+			treasureGold: summary.treasureGold + castEarnings.treasureGold,
 			baitCost: summary.baitCost + castEarnings.baitCost,
 			unknownBaitCostCasts: summary.unknownBaitCostCasts + castEarnings.unknownBaitCostCasts,
 			xp: summary.xp + castEarnings.xp,
@@ -2193,17 +2237,17 @@
 		for (const [category, count] of Object.entries(right)) merged[category] = toNonNegativeNumber(merged[category]) + count;
 		return merged;
 	}
-	function filterEarningsStats(earningsStats, { biomeId = null, baitId = null } = {}) {
+	function filterEarningsStats(earningsStats, { biomeId = null, castMethod = null } = {}) {
 		const normalizedBiomeId = biomeId === null ? null : String(biomeId);
-		const normalizedBaitId = baitId === null ? null : String(baitId);
-		if (normalizedBiomeId === null && normalizedBaitId === null) return earningsStats;
+		const normalizedCastMethod = castMethod === null ? null : String(castMethod);
+		if (normalizedBiomeId === null && normalizedCastMethod === null) return earningsStats;
 		let filteredStats = {
 			startedAt: null,
 			updatedAt: null,
 			...createEmptyEarningsCounters()
 		};
 		for (const breakdown of Object.values(earningsStats.breakdowns ?? {})) {
-			if (normalizedBiomeId !== null && breakdown.biomeId !== normalizedBiomeId || normalizedBaitId !== null && breakdown.baitId !== normalizedBaitId) continue;
+			if (normalizedBiomeId !== null && breakdown.biomeId !== normalizedBiomeId || normalizedCastMethod !== null && breakdown.castMethod !== normalizedCastMethod) continue;
 			filteredStats = {
 				...filteredStats,
 				startedAt: filteredStats.startedAt === null ? breakdown.startedAt : Math.min(filteredStats.startedAt, breakdown.startedAt),
@@ -2212,6 +2256,7 @@
 				fish: filteredStats.fish + breakdown.fish,
 				gold: filteredStats.gold + breakdown.gold,
 				fishGold: filteredStats.fishGold + breakdown.fishGold,
+				treasureGold: filteredStats.treasureGold + breakdown.treasureGold,
 				baitCost: filteredStats.baitCost + breakdown.baitCost,
 				unknownBaitCostCasts: filteredStats.unknownBaitCostCasts + breakdown.unknownBaitCostCasts,
 				xp: filteredStats.xp + breakdown.xp,
@@ -2252,14 +2297,17 @@
 		const price = Number(value);
 		return Number.isFinite(price) && price >= 0 ? price : null;
 	}
-	function getCastEarningsContext(result) {
+	function getCastEarningsContext(result, castMethod = "manual") {
 		const biomeId = normalizeId(result.currentBiome, "unknown");
 		const baitId = normalizeId(result.equippedBait, "unknown");
 		const biome = unsafeWindow.BIOMES?.[biomeId] ?? null;
 		const bait = getBaitById(baitId);
+		const normalizedCastMethod = castMethod === "auto" ? "auto" : "manual";
 		return {
 			biomeId,
 			biomeName: String(biome?.name ?? "").trim() || `地图 ${biomeId}`,
+			castMethod: normalizedCastMethod,
+			castMethodLabel: normalizedCastMethod === "auto" ? "自动抛竿" : "手动抛竿",
 			baitId,
 			baitName: String(bait?.name ?? "").trim() || baitId,
 			baitPrice: normalizeBaitPrice(bait?.price)
@@ -3169,6 +3217,28 @@
 		} catch (error) {
 			console.warn("[自动买鱼饵] 无法保存设置：", error);
 		}
+	}
+	var AUTO_ATTRIBUTE_STATS = [
+		{ key: "intelligence", label: "智力" },
+		{ key: "luck", label: "幸运" },
+		{ key: "strength", label: "力量" },
+		{ key: "stamina", label: "耐力" }
+	];
+	function getAutoAttributeLabel(key) {
+		const stat = AUTO_ATTRIBUTE_STATS.find((item) => item.key === key);
+		return stat ? stat.label : key;
+	}
+	function getMaxAutoAttribute(stats = {}) {
+		let target = AUTO_ATTRIBUTE_STATS[0].key;
+		let maxValue = Number.NEGATIVE_INFINITY;
+		for (const stat of AUTO_ATTRIBUTE_STATS) {
+			const value = Number(stats[stat.key]) || 0;
+			if (value > maxValue) {
+				maxValue = value;
+				target = stat.key;
+			}
+		}
+		return target;
 	}
 	function loadAutoBossSettings() {
 		const defaults = { enabled: true };
@@ -4291,8 +4361,8 @@
 	function createPanelController({ actions, getState }) {
 		let panelCollapsed = loadPanelCollapsed();
 		let panelView = "control";
-		let earningsBiomeFilter = "current";
-		let earningsBaitFilter = "current";
+		let earningsBiomeFilter = "all";
+		let earningsBaitFilter = "all";
 		let autoBaitPurchaseSaveTimer = null;
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
@@ -4500,7 +4570,7 @@
             <select id="stats-biome-filter" class="stats-select"></select>
           </label>
           <label class="stats-filter">
-            <span>鱼饵范围</span>
+            <span>抛竿方式</span>
             <select id="stats-bait-filter" class="stats-select"></select>
           </label>
         </div>
@@ -4510,68 +4580,52 @@
 
         <div class="stats-grid">
           <div class="stat-card">
-            <span class="stat-card-label">成功抛竿</span>
+            <span class="stat-card-label">当前抛竿</span>
             <strong id="stats-casts" class="stat-card-value">0</strong>
           </div>
           <div class="stat-card">
-            <span class="stat-card-label">鱼获</span>
-            <strong id="stats-fish" class="stat-card-value">0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">直接金币</span>
-            <strong
-              id="stats-gold"
-              class="stat-card-value"
-              data-tone="income"
-            >0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">鱼获价值</span>
-            <strong
-              id="stats-fish-gold"
-              class="stat-card-value"
-              data-tone="gold"
-            >0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">鱼饵成本</span>
-            <strong
-              id="stats-bait-cost"
-              class="stat-card-value"
-              data-tone="cost"
-            >0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">净收益</span>
-            <strong
-              id="stats-net-gold"
-              class="stat-card-value"
-              data-tone="neutral"
-            >0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">经验</span>
-            <strong id="stats-xp" class="stat-card-value">0</strong>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-label">遗物</span>
-            <strong id="stats-relics" class="stat-card-value">0</strong>
+            <span class="stat-card-label">每小时抛竿</span>
+            <strong id="stats-casts-per-hour" class="stat-card-value">不适用</strong>
           </div>
           <div class="stat-card">
             <span class="stat-card-label">宝箱</span>
             <strong id="stats-treasures" class="stat-card-value">0</strong>
           </div>
           <div class="stat-card">
-            <span class="stat-card-label">装备</span>
-            <strong id="stats-gears" class="stat-card-value">0</strong>
+            <span class="stat-card-label">平均宝箱杆数</span>
+            <strong id="stats-casts-per-treasure" class="stat-card-value">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">统计时长</span>
+            <strong id="stats-duration" class="stat-card-value">0.00</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">每小时经验</span>
+            <strong id="stats-xp-per-hour" class="stat-card-value">不适用</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">直接金币</span>
+            <strong id="stats-gold" class="stat-card-value" data-tone="income">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">渔获价值</span>
+            <strong id="stats-fish-gold" class="stat-card-value" data-tone="gold">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">宝箱平均金币</span>
+            <strong id="stats-treasure-average" class="stat-card-value" data-tone="gold">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">净收益</span>
+            <strong id="stats-net-gold" class="stat-card-value" data-tone="neutral">0</strong>
           </div>
           <div class="stat-card">
             <span class="stat-card-label">每竿净收益</span>
-            <strong
-              id="stats-net-average"
-              class="stat-card-value"
-              data-tone="neutral"
-            >0</strong>
+            <strong id="stats-net-average" class="stat-card-value" data-tone="neutral">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-label">每小时净收益</span>
+            <strong id="stats-net-per-hour" class="stat-card-value" data-tone="neutral">不适用</strong>
           </div>
         </div>
 
@@ -4632,6 +4686,19 @@
           <button id='export-arcane-fish-en' class='toggle' type='button'>
             导出已有奥术（英）
           </button>
+        </details>
+
+        <details class='settings-section'>
+          <summary class='settings-title'>自动升属性</summary>
+
+          <div class='row'>
+            <span class='label'>当前最大属性</span>
+            <span id='auto-attribute-target' class='value'>未读取</span>
+          </div>
+
+          <div class='field-help'>
+            每个整点后随机 0-10 分钟内，使用全部可用属性点升级当前等级最高的属性。
+          </div>
         </details>
 
         <details class="settings-section">
@@ -5021,16 +5088,17 @@
 				statsScope: shadowRoot.querySelector("#stats-scope"),
 				statsStart: shadowRoot.querySelector("#stats-start"),
 				statsCasts: shadowRoot.querySelector("#stats-casts"),
-				statsFish: shadowRoot.querySelector("#stats-fish"),
+				statsCastsPerHour: shadowRoot.querySelector("#stats-casts-per-hour"),
 				statsGold: shadowRoot.querySelector("#stats-gold"),
 				statsFishGold: shadowRoot.querySelector("#stats-fish-gold"),
-				statsBaitCost: shadowRoot.querySelector("#stats-bait-cost"),
+				statsTreasureAverage: shadowRoot.querySelector("#stats-treasure-average"),
 				statsNetGold: shadowRoot.querySelector("#stats-net-gold"),
-				statsXp: shadowRoot.querySelector("#stats-xp"),
-				statsRelics: shadowRoot.querySelector("#stats-relics"),
+				statsCastsPerTreasure: shadowRoot.querySelector("#stats-casts-per-treasure"),
+				statsXpPerHour: shadowRoot.querySelector("#stats-xp-per-hour"),
+				statsDuration: shadowRoot.querySelector("#stats-duration"),
 				statsTreasures: shadowRoot.querySelector("#stats-treasures"),
-				statsGears: shadowRoot.querySelector("#stats-gears"),
 				statsNetAverage: shadowRoot.querySelector("#stats-net-average"),
+				statsNetPerHour: shadowRoot.querySelector("#stats-net-per-hour"),
 				statsCostNote: shadowRoot.querySelector("#stats-cost-note"),
 				rarityStats: shadowRoot.querySelector("#rarity-stats"),
 				resetStats: shadowRoot.querySelector("#reset-stats"),
@@ -5041,6 +5109,7 @@
 				exportExoticFishEn: shadowRoot.querySelector('#export-exotic-fish-en'),
 				exportArcaneFishZh: shadowRoot.querySelector('#export-arcane-fish-zh'),
 				exportArcaneFishEn: shadowRoot.querySelector('#export-arcane-fish-en'),
+				autoAttributeTarget: shadowRoot.querySelector('#auto-attribute-target'),
 				autoSellStatus: shadowRoot.querySelector('#auto-sell-status'),
 				sellIdleFish: shadowRoot.querySelector('#sell-idle-fish'),
 				adjustMasteryBuyOrders: shadowRoot.querySelector('#adjust-mastery-buy-orders'),
@@ -5226,7 +5295,7 @@
 			});
 			ui.statsBiomeFilter.addEventListener("change", (event) => {
 				earningsBiomeFilter = event.currentTarget.value;
-				earningsBaitFilter = earningsBiomeFilter === "current" ? "current" : "all";
+				earningsBaitFilter = "all";
 				renderEarningsStats();
 			});
 			ui.statsBaitFilter.addEventListener("change", (event) => {
@@ -5234,6 +5303,7 @@
 				renderEarningsStats();
 			});
 			renderToggle();
+			renderAutoAttributeSettings();
 			renderAutoBaitSettings();
 			renderAutoBiomeSettings();
 			renderAutoBossSettings();
@@ -5357,49 +5427,30 @@
 				}))
 			];
 			earningsBiomeFilter = replaceSelectOptions(ui.statsBiomeFilter, biomeOptions, earningsBiomeFilter);
-			const resolvedBiomeId = getResolvedBiomeId(earningsStats);
-			const baitContexts = new Map();
-			for (const breakdown of breakdowns) {
-				if (resolvedBiomeId !== null && breakdown.biomeId !== resolvedBiomeId) continue;
-				baitContexts.set(breakdown.baitId, breakdown);
-			}
-			const currentBaitAvailable = currentContext && (resolvedBiomeId === null || resolvedBiomeId === currentContext.biomeId);
-			if (currentBaitAvailable) baitContexts.set(currentContext.baitId, currentContext);
-			const sortedBaitContexts = [...baitContexts.values()].sort((left, right) => left.baitName.localeCompare(right.baitName));
-			const baitOptions = [
-				{
-					value: "current",
-					label: currentBaitAvailable ? `当前 · ${formatBaitLabel(currentContext)}` : "当前鱼饵（不在所选地图）",
-					disabled: !currentBaitAvailable
-				},
-				{
-					value: "all",
-					label: "全部鱼饵"
-				},
-				...sortedBaitContexts.map((context) => ({
-					value: `bait:${context.baitId}`,
-					label: formatBaitLabel(context)
-				}))
+			const castMethodOptions = [
+				{ value: "all", label: "全部抛竿" },
+				{ value: "manual", label: "手动抛竿" },
+				{ value: "auto", label: "自动抛竿" }
 			];
-			earningsBaitFilter = replaceSelectOptions(ui.statsBaitFilter, baitOptions, earningsBaitFilter);
+			earningsBaitFilter = replaceSelectOptions(ui.statsBaitFilter, castMethodOptions, earningsBaitFilter);
 		}
 		function resolveEarningsFilter(earningsStats) {
 			const currentContext = earningsStats.lastContext;
 			return {
-				ready: !(earningsBiomeFilter === "current" && !currentContext) && !(earningsBaitFilter === "current" && !currentContext),
+				ready: !(earningsBiomeFilter === "current" && !currentContext),
 				biomeId: earningsBiomeFilter === "current" ? currentContext?.biomeId : earningsBiomeFilter === "all" ? null : earningsBiomeFilter.slice(6),
-				baitId: earningsBaitFilter === "current" ? currentContext?.baitId : earningsBaitFilter === "all" ? null : earningsBaitFilter.slice(5)
+				castMethod: earningsBaitFilter === "all" ? null : earningsBaitFilter
 			};
 		}
 		function getEarningsScopeLabel(earningsStats, filter) {
-			if (!filter.ready) return "等待首次抛竿确认当前地图和鱼饵";
+			if (!filter.ready) return "等待首次抛竿确认当前地图";
 			const breakdowns = listEarningsBreakdowns(earningsStats);
 			const biomeContext = earningsStats.lastContext?.biomeId === filter.biomeId ? earningsStats.lastContext : breakdowns.find((breakdown) => breakdown.biomeId === filter.biomeId);
-			const baitContext = earningsStats.lastContext?.baitId === filter.baitId ? earningsStats.lastContext : breakdowns.find((breakdown) => breakdown.baitId === filter.baitId);
+			const castMethodLabel = filter.castMethod === null ? "全部抛竿" : filter.castMethod === "auto" ? "自动抛竿" : "手动抛竿";
 			return `${filter.biomeId === null ? "全部地图" : formatBiomeLabel(biomeContext ?? {
 				biomeId: filter.biomeId,
 				biomeName: `地图 ${filter.biomeId}`
-			})} · ${filter.baitId === null ? "全部鱼饵" : baitContext?.baitName ?? filter.baitId}`;
+			})} · ${castMethodLabel}`;
 		}
 		function getEarningsCategoryDisplay(category) {
 			const originalLabel = normalizeText(category) || "Unknown";
@@ -5435,25 +5486,34 @@
 			const filter = resolveEarningsFilter(earningsStats);
 			const filteredStats = filter.ready ? filterEarningsStats(earningsStats, filter) : filterEarningsStats(earningsStats, {
 				biomeId: "__missing__",
-				baitId: "__missing__"
+				castMethod: "__missing__"
 			});
 			const netGold = filteredStats.gold + filteredStats.fishGold - filteredStats.baitCost;
 			const averageNetGold = filteredStats.casts > 0 ? netGold / filteredStats.casts : 0;
+			const statsDurationMs = filteredStats.startedAt ? Math.max(0, Date.now() - filteredStats.startedAt) : 0;
+			const netGoldPerHour = statsDurationMs >= 3600000 ? netGold / (statsDurationMs / 3600000) : null;
+			const castsPerHour = statsDurationMs >= 3600000 ? filteredStats.casts / (statsDurationMs / 3600000) : null;
+			const statsDurationHours = statsDurationMs / 3600000;
+			const xpPerHour = statsDurationMs >= 3600000 ? filteredStats.xp / statsDurationHours : null;
+			const treasureAverageGold = filteredStats.treasureChests > 0 ? filteredStats.treasureGold / filteredStats.treasureChests : 0;
+			const averageCastsPerTreasure = filteredStats.treasureChests > 0 ? filteredStats.casts / filteredStats.treasureChests : 0;
 			ui.statsScope.textContent = getEarningsScopeLabel(earningsStats, filter);
 			ui.statsStart.textContent = filteredStats.startedAt ? `统计起点：${new Date(filteredStats.startedAt).toLocaleString()}` : "当前范围暂无数据";
 			ui.statsCasts.textContent = formatStatNumber(filteredStats.casts);
-			ui.statsFish.textContent = formatStatNumber(filteredStats.fish);
+			ui.statsCastsPerHour.textContent = castsPerHour === null ? "不适用" : formatStatNumber(castsPerHour);
 			ui.statsGold.textContent = formatStatNumber(filteredStats.gold, 2);
 			ui.statsFishGold.textContent = formatStatNumber(filteredStats.fishGold, 2);
-			ui.statsBaitCost.textContent = formatStatNumber(filteredStats.baitCost, 2);
+			ui.statsTreasureAverage.textContent = formatStatNumber(treasureAverageGold, 2);
 			ui.statsNetGold.textContent = formatStatNumber(netGold, 2);
-			ui.statsXp.textContent = formatStatNumber(filteredStats.xp, 2);
-			ui.statsRelics.textContent = formatStatNumber(filteredStats.relics, 2);
+			ui.statsCastsPerTreasure.textContent = formatStatNumber(averageCastsPerTreasure);
+			ui.statsXpPerHour.textContent = xpPerHour === null ? "不适用" : formatStatNumber(xpPerHour);
+			ui.statsDuration.textContent = statsDurationHours.toFixed(2);
 			ui.statsTreasures.textContent = formatStatNumber(filteredStats.treasureChests);
-			ui.statsGears.textContent = formatStatNumber(filteredStats.gears);
-			ui.statsNetAverage.textContent = formatStatNumber(averageNetGold, 1);
+			ui.statsNetAverage.textContent = formatStatNumber(averageNetGold);
+			ui.statsNetPerHour.textContent = netGoldPerHour === null ? "不适用" : formatStatNumber(netGoldPerHour);
 			renderSignedStatTone(ui.statsNetGold, netGold);
 			renderSignedStatTone(ui.statsNetAverage, averageNetGold);
+			renderSignedStatTone(ui.statsNetPerHour, netGoldPerHour ?? 0);
 			ui.statsCostNote.hidden = filteredStats.unknownBaitCostCasts === 0;
 			ui.statsCostNote.textContent = filteredStats.unknownBaitCostCasts > 0 ? `${formatStatNumber(filteredStats.unknownBaitCostCasts)} 次抛竿未获取到鱼饵价格，成本和净收益暂未包含。` : "";
 			const rarityEntries = Object.entries(filteredStats.rarityCounts).sort((left, right) => right[1] - left[1]);
@@ -5550,6 +5610,11 @@
 			}
 			ui.autoBaitLastPurchasedAt.textContent = autoBaitLastPurchasedAt ? new Date(autoBaitLastPurchasedAt).toLocaleTimeString() : "暂无";
 		}
+		function renderAutoAttributeSettings() {
+			if (!ui?.autoAttributeTarget) return;
+			const { autoAttributeTarget } = getState();
+			ui.autoAttributeTarget.textContent = autoAttributeTarget ? getAutoAttributeLabel(autoAttributeTarget) : "未读取";
+		}
 		function renderAutoBossSettings() {
 			if (!ui?.autoBossStatus) return;
 			const { autoBossSettings, autoBossStatus } = getState();
@@ -5621,6 +5686,7 @@
 		}
 		createPanel();
 		return {
+			renderAutoAttributeSettings,
 			renderAutoBaitSettings,
 			renderAutoBiomeSettings,
 			renderAutoBossSettings,
@@ -5646,6 +5712,8 @@
 	var autoBiomeSettings = loadAutoBiomeSettings();
 	var autoBaitSettings = loadAutoBaitSettings();
 	var autoBossSettings = loadAutoBossSettings();
+	var autoAttributeTarget = null;
+	var autoAttributeTimer = null;
 	var earningsStats = loadEarningsStats();
 	var loopId = 0;
 	var clickCount = 0;
@@ -5705,7 +5773,7 @@
 	function recordCastResult(result, { pathname } = {}) {
 		fishingActivityWatchdog.markFishing();
 		notifyNoteworthyCatch(result);
-		earningsStats = updateEarningsStats(earningsStats, result, getCastEarningsContext(result));
+		earningsStats = updateEarningsStats(earningsStats, result, getCastEarningsContext(result, pathname === "/api/game/auto-cast" ? "auto" : "manual"));
 		saveEarningsStats(earningsStats);
 		panel?.renderEarningsStats();
 		autoBiome?.handleCastResult(result);
@@ -5798,6 +5866,7 @@
 			earningsStats,
 			enabled,
 			gameAutoFishingSettings,
+			autoAttributeTarget,
 			autoBaitSettings,
 			autoBiomeSettings,
 			autoBossSettings,
@@ -6189,6 +6258,45 @@
 			minimumQuantity: normalizeAutoBaitMinimumQuantity(minimumQuantity, autoBaitSettings.minimumQuantity),
 			purchaseQuantity: normalizeAutoBaitPurchaseQuantity(purchaseQuantity, autoBaitSettings.purchaseQuantity)
 		});
+	}
+	function getNextAutoAttributeDelay(now = new Date()) {
+		const nextHour = new Date(now);
+		nextHour.setMinutes(0, 0, 0);
+		nextHour.setMilliseconds(0);
+		nextHour.setHours(nextHour.getHours() + 1);
+		const randomOffsetMs = Math.floor(Math.random() * 10 * 60 * 1000);
+		return Math.max(0, nextHour.getTime() + randomOffsetMs - now.getTime());
+	}
+	function scheduleAutoAttributeUpgrade() {
+		window.clearTimeout(autoAttributeTimer);
+		autoAttributeTimer = window.setTimeout(async () => {
+			try {
+				if (enabled) await runAutoAttributeUpgrade();
+			} catch (error) {
+				console.warn("[自动升属性] 执行失败：", error);
+			}
+			scheduleAutoAttributeUpgrade();
+		}, getNextAutoAttributeDelay());
+	}
+	async function refreshAutoAttributeTarget() {
+		const api = unsafeWindow.ApiService;
+		if (!api || typeof api.getPlayerData !== "function") return null;
+		const player = await api.getPlayerData();
+		autoAttributeTarget = getMaxAutoAttribute(player?.stats);
+		panel?.renderAutoAttributeSettings();
+		return player;
+	}
+	async function runAutoAttributeUpgrade() {
+		const api = unsafeWindow.ApiService;
+		if (!api || typeof api.getPlayerData !== "function" || typeof api.upgradeStat !== "function") return { skipped: true };
+		const player = await refreshAutoAttributeTarget();
+		if (!player) return { skipped: true };
+		const stat = autoAttributeTarget;
+		const statPoints = Number(player?.statPoints) || 0;
+		if (statPoints <= 0) return { skipped: true, stat, statPoints: 0 };
+		const result = await api.upgradeStat(stat, statPoints);
+		console.info(`[自动升属性] 已使用 ${statPoints} 点属性升级 ${getAutoAttributeLabel(stat)}：`, result);
+		return { stat, statPoints, result };
 	}
 	function setClickDelaySetting(field, value) {
 		if (!CLICK_DELAY_SETTING_FIELDS.has(field)) return;
@@ -7282,6 +7390,7 @@
 			},
 			getState: getPanelState
 		});
+		refreshAutoAttributeTarget().catch((error) => console.warn("[自动升属性] 初始化读取当前最大属性失败：", error));
 		captcha = createCaptchaController({
 			getCurrentBiome() {
 				return gameState.getPlayerSnapshot()?.currentBiome;
@@ -7352,6 +7461,7 @@
 		}
 		setEnabled(enabled, { preserveSchedule: enabled && scheduleSettings.enabled });
 		autoBoss.start();
+		scheduleAutoAttributeUpgrade();
 		if (loginMonitorSettings.enabled) startLoginMonitor();
 		console.info("[自动抛竿] 脚本已加载，使用右下角按钮控制。");
 	}
