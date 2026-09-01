@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.52
+// @version      4.53
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6278,6 +6278,38 @@
 			scheduleAutoAttributeUpgrade();
 		}, getNextAutoAttributeDelay());
 	}
+	function waitForAutoAttributeApi(timeoutMs = 30000) {
+		return new Promise((resolve) => {
+			const startedAt = Date.now();
+			const tick = () => {
+				const api = unsafeWindow.ApiService;
+				if (api && typeof api.getPlayerData === "function") {
+					resolve(api);
+					return;
+				}
+				if (Date.now() - startedAt >= timeoutMs) {
+					resolve(null);
+					return;
+				}
+				window.setTimeout(tick, 500);
+			};
+			tick();
+		});
+	}
+	async function initializeAutoAttributeTarget() {
+		try {
+			const api = await waitForAutoAttributeApi();
+			if (!api) {
+				console.warn("[自动升属性] 等待 ApiService 就绪超时，未读取当前最大属性");
+				return;
+			}
+			const player = await api.getPlayerData();
+			autoAttributeTarget = getMaxAutoAttribute(player?.stats);
+			panel?.renderAutoAttributeSettings();
+		} catch (error) {
+			console.warn("[自动升属性] 初始化读取当前最大属性失败：", error);
+		}
+	}
 	async function refreshAutoAttributeTarget() {
 		const api = unsafeWindow.ApiService;
 		if (!api || typeof api.getPlayerData !== "function") return null;
@@ -7390,7 +7422,7 @@
 			},
 			getState: getPanelState
 		});
-		refreshAutoAttributeTarget().catch((error) => console.warn("[自动升属性] 初始化读取当前最大属性失败：", error));
+		initializeAutoAttributeTarget();
 		captcha = createCaptchaController({
 			getCurrentBiome() {
 				return gameState.getPlayerSnapshot()?.currentBiome;
