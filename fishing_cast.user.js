@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.38
+// @version      4.39
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6801,7 +6801,6 @@
 			const satisfiedKeys = new Set();
 			const cancelOps = [];
 			for (const order of orders) {
-				if (order.fish_rarity === 'Arcane') continue;
 				const key = order.fish_name + '|' + order.fish_biome_id;
 				const desired = desiredByKey.get(key);
 				if (!desired) {
