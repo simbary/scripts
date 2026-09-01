@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.37
+// @version      4.38
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -4626,6 +4626,12 @@
           <button id='export-exotic-fish-en' class='toggle' type='button'>
             导出已有奇异（英）
           </button>
+          <button id='export-arcane-fish-zh' class='toggle' type='button'>
+            导出已有奥术（中）
+          </button>
+          <button id='export-arcane-fish-en' class='toggle' type='button'>
+            导出已有奥术（英）
+          </button>
         </details>
 
         <details class="settings-section">
@@ -5033,6 +5039,8 @@
 				exportFishImage: shadowRoot.querySelector("#export-fish-image"),
 				exportExoticFishZh: shadowRoot.querySelector('#export-exotic-fish-zh'),
 				exportExoticFishEn: shadowRoot.querySelector('#export-exotic-fish-en'),
+				exportArcaneFishZh: shadowRoot.querySelector('#export-arcane-fish-zh'),
+				exportArcaneFishEn: shadowRoot.querySelector('#export-arcane-fish-en'),
 				autoSellStatus: shadowRoot.querySelector('#auto-sell-status'),
 				sellIdleFish: shadowRoot.querySelector('#sell-idle-fish'),
 				adjustMasteryBuyOrders: shadowRoot.querySelector('#adjust-mastery-buy-orders'),
@@ -5075,6 +5083,24 @@
 				exportOwnedExoticFish('en').finally(() => {
 					ui.exportExoticFishEn.disabled = false;
 					ui.exportExoticFishEn.textContent = '导出已有奇异（英）';
+				});
+			});
+			ui.exportArcaneFishZh.addEventListener('click', () => {
+				if (ui.exportArcaneFishZh.disabled) return;
+				ui.exportArcaneFishZh.disabled = true;
+				ui.exportArcaneFishZh.textContent = '正在导出...';
+				exportOwnedArcaneFish('zh').finally(() => {
+					ui.exportArcaneFishZh.disabled = false;
+					ui.exportArcaneFishZh.textContent = '导出已有奥术（中）';
+				});
+			});
+			ui.exportArcaneFishEn.addEventListener('click', () => {
+				if (ui.exportArcaneFishEn.disabled) return;
+				ui.exportArcaneFishEn.disabled = true;
+				ui.exportArcaneFishEn.textContent = '正在导出...';
+				exportOwnedArcaneFish('en').finally(() => {
+					ui.exportArcaneFishEn.disabled = false;
+					ui.exportArcaneFishEn.textContent = '导出已有奥术（英）';
 				});
 			});
 			ui.sellIdleFish.addEventListener('click', () => {
@@ -7107,6 +7133,74 @@
 			return { copied: copied, items: items, text: text };
 		} catch (e) {
 			console.error('[换鱼助手] 复制奇异鱼失败:', e);
+			const errorMessage = '复制失败：' + e.message;
+			panel?.setStatus(errorMessage);
+			if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(errorMessage, 'error');
+			return { copied: false, items: [], text: '' };
+		}
+	}
+
+	async function collectOwnedArcaneFish() {
+		exportFishBiomeMap = exportFishBuildBiomeMap();
+		const items = [];
+		const seen = new Set();
+		function addFish(biomeId, nameEn) {
+			if (!nameEn) return;
+			const resolvedBiomeId = Number(biomeId) || exportFishBiomeMap[nameEn]?.biomeId || 0;
+			const key = resolvedBiomeId + '_' + nameEn;
+			if (seen.has(key)) return;
+			seen.add(key);
+			items.push({ biomeId: resolvedBiomeId, nameEn: nameEn });
+		}
+		try {
+			const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
+			if (playerResponse.ok) {
+				const playerData = await playerResponse.json();
+				(playerData?.inventory || []).forEach((item) => {
+					if (item.rarity !== 'Arcane') return;
+					addFish(item.biomeId, item.name || item.fishName);
+				});
+			}
+		} catch (e) {}
+		try {
+			const listingsResponse = await window.fetch('/api/marketplace/my-listings', { credentials: 'include' });
+			if (listingsResponse.ok) {
+				const listingsData = await listingsResponse.json();
+				(listingsData?.listings || []).forEach((listing) => {
+					if (listing.item_type !== 'fish') return;
+					if (listing.fish_rarity !== 'Arcane') return;
+					addFish(listing.fish_biome_id, listing.fish_name);
+				});
+			}
+		} catch (e) {}
+		items.sort((a, b) => (a.biomeId - b.biomeId) || String(a.nameEn).localeCompare(String(b.nameEn)));
+		return items;
+	}
+
+	function formatOwnedArcaneFishText(items, lang) {
+		if (!items.length) return lang === 'en' ? 'No arcane fish' : '暂无奥术鱼';
+		if (lang === 'en') {
+			return 'I have ' + items.map((fish) => 'B' + fish.biomeId + ' ' + fish.nameEn).join(', ');
+		}
+		return '我有' + items.map((fish) => 'B' + fish.biomeId + ' ' + exportFishGetChineseName(fish.nameEn)).join('，');
+	}
+
+	async function exportOwnedArcaneFish(lang) {
+		try {
+			const items = await collectOwnedArcaneFish();
+			const text = formatOwnedArcaneFishText(items, lang);
+			const copied = await copyTextToClipboard(text);
+			const successMessage = lang === 'en' ? '已复制奥术鱼到剪贴板（英文）' : '已复制奥术鱼到剪贴板（中文）';
+			if (copied) {
+				panel?.setStatus(successMessage);
+				if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(successMessage, 'success');
+			} else {
+				panel?.setStatus('复制失败，请手动复制');
+				if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast('复制失败，请手动复制', 'error');
+			}
+			return { copied: copied, items: items, text: text };
+		} catch (e) {
+			console.error('[换鱼助手] 复制奥术鱼失败:', e);
 			const errorMessage = '复制失败：' + e.message;
 			panel?.setStatus(errorMessage);
 			if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(errorMessage, 'error');
