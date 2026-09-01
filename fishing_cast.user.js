@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.36
+// @version      4.37
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6743,6 +6743,7 @@
 
 	async function adjustMasteryBuyOrders() {
 		try {
+			await sacrificeAllMasteryBiomes();
 			let required = [];
 			try {
 				const requiredData = await fetchMasteryRequiredFish();
@@ -6930,6 +6931,93 @@
 		});
 		if (!response.ok) throw new Error('创建购买挂单失败：' + response.status);
 		return response.json();
+	}
+
+	async function masteryApiRequest(path, method) {
+		if (unsafeWindow.ApiService && typeof unsafeWindow.ApiService.request === 'function') {
+			return unsafeWindow.ApiService.request(path, { method: method });
+		}
+		const response = await window.fetch('/api' + path, { method: method, credentials: 'include' });
+		if (!response.ok) throw new Error('请求失败：' + response.status);
+		return response.json();
+	}
+
+	async function fetchPlayerInventoryData() {
+		if (unsafeWindow.ApiService && typeof unsafeWindow.ApiService.getPlayerData === 'function') {
+			return unsafeWindow.ApiService.getPlayerData();
+		}
+		const response = await window.fetch('/api/player/data', { credentials: 'include' });
+		if (!response.ok) throw new Error('读取背包失败：' + response.status);
+		return response.json();
+	}
+
+	function buildMasteryInventoryMap(inventory) {
+		const map = new Map();
+		(inventory || []).forEach((item) => {
+			if (!item?.name) return;
+			const biomeId = parseInt(item.biomeId, 10) || 0;
+			const key = item.name.trim().toLowerCase() + '|' + biomeId;
+			map.set(key, (map.get(key) || 0) + (Number(item.count) || 0));
+		});
+		return map;
+	}
+
+	async function sacrificeAllMasteryBiomes() {
+		try {
+			const masteryData = await masteryApiRequest('/mastery', 'GET');
+			const masteryMap = masteryData?.mastery || {};
+			const playerData = await fetchPlayerInventoryData();
+			let inventoryMap = buildMasteryInventoryMap(playerData?.inventory || []);
+			const unlocked = Array.isArray(playerData?.unlockedBiomes) && playerData.unlockedBiomes.length
+				? playerData.unlockedBiomes.map(Number)
+				: Object.keys(masteryMap).map(Number);
+			const biomeIds = unlocked.filter((id) => masteryMap[id]).sort((a, b) => a - b);
+
+			for (const biomeId of biomeIds) {
+				const MAX_ITERATIONS = 30;
+				for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+					const biomeData = await masteryApiRequest('/mastery/biome/' + biomeId, 'GET');
+					const targetFish = biomeData?.targetFish || [];
+					if (!targetFish.length) break;
+					const progress = biomeData?.progress || {};
+
+					let canSacrifice = false;
+					for (const fish of targetFish) {
+						const sacrificed = Number(progress[fish.fishName]) || 0;
+						const invCount = inventoryMap.get(fish.fishName.trim().toLowerCase() + '|' + biomeId) || 0;
+						if (invCount > 0 && sacrificed < Number(fish.required)) {
+							canSacrifice = true;
+							break;
+						}
+					}
+
+					if (canSacrifice) {
+						panel?.setAutoSellStatus('正在献祭B' + biomeId + '的专精鱼');
+						const result = await masteryApiRequest('/mastery/biome/' + biomeId + '/sacrifice-all', 'POST');
+						await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+						const freshPlayer = await fetchPlayerInventoryData();
+						inventoryMap = buildMasteryInventoryMap(freshPlayer?.inventory || []);
+						if (!result?.success || Number(result?.totalSacrificed || 0) <= 0) break;
+						continue;
+					}
+
+					const allComplete = targetFish.every((fish) => (Number(progress[fish.fishName]) || 0) >= Number(fish.required));
+					if (allComplete) {
+						panel?.setAutoSellStatus('正在升级B' + biomeId + '的专精等级');
+						const result = await masteryApiRequest('/mastery/biome/' + biomeId + '/levelup', 'POST');
+						await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+						if (!result?.success) break;
+						const freshPlayer = await fetchPlayerInventoryData();
+						inventoryMap = buildMasteryInventoryMap(freshPlayer?.inventory || []);
+						continue;
+					}
+
+					break;
+				}
+			}
+		} catch (e) {
+			console.warn('[市场买卖单] 献祭专精鱼失败：', e);
+		}
 	}
 
 	async function copyTextToClipboard(text) {
