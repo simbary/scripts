@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.39
+// @version      4.40
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6784,14 +6784,17 @@
 				const remaining = Number(fish.remaining) || 0;
 				if (remaining <= 0) return;
 				const info = fishCatalog.get(key);
-				if (!info || info.rarity === 'Arcane') return;
+				if (!info) return;
+				let quantity = remaining;
+				if (info.rarity === 'Exotic' && quantity > 2) quantity = 2;
+				if (info.rarity === 'Arcane' && quantity > 1) quantity = 1;
 				const price = computeBuyOrderPrice(info.rarity, info.baseGold);
 				if (price == null) return;
 				desiredByKey.set(key, {
 					fishName: fish.fishName,
 					fishBiomeId: Number(fish.biomeId) || info.biomeId,
 					rarity: info.rarity,
-					remaining: remaining,
+					remaining: quantity,
 					price: price
 				});
 			});
@@ -6895,6 +6898,7 @@
 		if (rarity === 'Legendary') return Math.max(20000, Math.ceil(baseGold / 10000) * 10000);
 		if (rarity === 'Mythic') return Math.max(300000, Math.ceil(baseGold / 100000) * 100000);
 		if (rarity === 'Exotic') return 1500000;
+		if (rarity === 'Arcane') return 7000000;
 		return null;
 	}
 
