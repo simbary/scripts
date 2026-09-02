@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.59
+// @version      4.62
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -6963,6 +6963,7 @@
 						? myListings.filter((listing) => listing.fish_name === name)
 						: myListings.filter((listing) => listing.fish_name === name && String(listing.fish_titan_bonus ?? '').trim() === String(item.titanBonus ?? '').trim());
 					for (const listing of matchingListings) {
+						if (Number(listing.price_per_unit) === pricePerUnit) continue;
 						quantity += Math.max(0, Math.floor(Number(listing.fish_quantity) || 0));
 						await cancelMarketplaceListingRequest(listing.id);
 					}
@@ -6997,6 +6998,52 @@
 
 	const IDLE_SELL_RARITIES = ['Epic', 'Legendary', 'Mythic'];
 
+	async function calibrateFishListingPrices() {
+		const catalog = buildFishCatalog();
+		const result = { corrected: 0, failed: 0 };
+		try {
+			const listingsResponse = await window.fetch('/api/marketplace/my-listings', { credentials: 'include' });
+			if (!listingsResponse.ok) return result;
+			const listingsData = await listingsResponse.json();
+			const listings = (listingsData?.listings || []).filter((listing) => listing.item_type === 'fish' && IDLE_SELL_RARITIES.indexOf(listing.fish_rarity) !== -1);
+			const mismatched = [];
+			for (const listing of listings) {
+				const info = catalog.get(listing.fish_name + '|' + listing.fish_biome_id);
+				if (!info) continue;
+				const titanBonus = Number(listing.fish_titan_bonus) || 1;
+				const expectedPrice = computeAutoSellPrice(listing.fish_rarity, info.baseGold * titanBonus);
+				if (Number(listing.price_per_unit) === expectedPrice) continue;
+				mismatched.push({ listing: listing, expectedPrice: expectedPrice });
+			}
+			for (let i = 0; i < mismatched.length; i++) {
+				const entry = mismatched[i];
+				const listing = entry.listing;
+				const expectedPrice = entry.expectedPrice;
+				try {
+					await cancelMarketplaceListingRequest(listing.id);
+					const playerResponse = await window.fetch('/api/player/data', { credentials: 'include' });
+					const playerData = playerResponse.ok ? await playerResponse.json() : null;
+					const inventory = playerData?.inventory || [];
+					const matched = inventory.find((item) => item.rarity === listing.fish_rarity && item.name === listing.fish_name && String(item.titanBonus ?? '').trim() === String(listing.fish_titan_bonus ?? '').trim());
+					if (!matched) {
+						result.failed += 1;
+					} else {
+						const quantity = Math.max(1, Math.floor(Number(matched.count) || 0));
+						panel?.setAutoSellStatus(formatMarketProgressStatus('正在校准卖单价格', (i + 1) + '/' + mismatched.length, '校准', listing.fish_rarity, listing.fish_biome_id, listing.fish_name, expectedPrice, quantity));
+						await createMarketplaceListingRequest({ itemType: 'fish', itemId: matched.id, pricePerUnit: expectedPrice, quantity: quantity });
+						result.corrected += 1;
+					}
+				} catch (e) {
+					result.failed += 1;
+					console.error('[市场买卖单] 校准卖单价格失败:', listing.id, listing.fish_name, e);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
+			}
+		} catch (e) {
+			console.warn('[市场买卖单] 校准卖单价格失败：', e);
+		}
+		return result;
+	}
 	async function sellAllIdleFish() {
 		let requiredKeys = new Set();
 		let masteryCancelList = [];
@@ -7038,6 +7085,8 @@
 			await new Promise((resolve) => setTimeout(resolve, 2000 + Math.floor(Math.random() * 1000)));
 		}
 
+		const calibration = await calibrateFishListingPrices();
+
 		const results = [];
 		for (let i = 0; i < IDLE_SELL_RARITIES.length; i++) {
 			const rarity = IDLE_SELL_RARITIES[i];
@@ -7058,7 +7107,7 @@
 		}
 		const sold = results.reduce((sum, result) => sum + (result.sold || 0), 0);
 		const failed = results.reduce((sum, result) => sum + (result.failed || 0), 0);
-		const summary = '出售闲置鱼完成：成功 ' + sold + ' 条，失败 ' + failed + ' 条';
+		const summary = '出售闲置鱼完成：成功 ' + sold + ' 条，校准价格 ' + calibration.corrected + ' 条，失败 ' + (failed + calibration.failed) + ' 条';
 		panel?.setAutoSellStatus(summary);
 		if (typeof unsafeWindow.showToast === 'function') unsafeWindow.showToast(summary, failed === 0 ? 'success' : 'error');
 		return { sold, failed };
@@ -7107,7 +7156,7 @@
 					cancelOps.push(order);
 					continue;
 				}
-				if (Number(order.quantity_wanted) === desired.remaining && !satisfiedKeys.has(key)) {
+				if (Number(order.quantity_wanted) === desired.remaining && Number(order.price_per_unit) === desired.price && !satisfiedKeys.has(key)) {
 					satisfiedKeys.add(key);
 					continue;
 				}
