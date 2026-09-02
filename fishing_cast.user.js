@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.55
+// @version      4.57
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -1224,7 +1224,7 @@
 		try {
 			const data = await api.getAnomalyHistory();
 			const history = Array.isArray(data?.history) ? data.history : [];
-			const claimable = history.filter((entry) => entry?.id != null && entry.status === "defeated" && Number(entry.rewards_claimed) === 0);
+			const claimable = history.filter((entry) => entry?.id != null && Boolean(entry.defeated_at) && Number(entry.rewards_claimed) === 0);
 			let claimed = 0;
 			for (const entry of claimable) {
 				try {
@@ -6928,6 +6928,8 @@
 				let quantity = remaining;
 				if (info.rarity === 'Exotic' && quantity > 2) quantity = 2;
 				if (info.rarity === 'Arcane' && quantity > 1) quantity = 1;
+				if (info.rarity === 'Mythic' && quantity > 10) quantity = 10;
+				if (info.rarity === 'Legendary' && quantity > 100) quantity = 100;
 				const price = computeBuyOrderPrice(info.rarity, info.baseGold);
 				if (price == null) return;
 				desiredByKey.set(key, {
