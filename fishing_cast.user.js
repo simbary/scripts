@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.62
+// @version      4.63
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -3295,7 +3295,7 @@
 		const result = {};
 		for (const key of Object.keys(MARKET_BUY_ORDER_MAX_QUANTITY_DEFAULTS)) {
 			const number = Number(value?.[key]);
-			result[key] = Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback[key];
+			result[key] = Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback[key];
 		}
 		return result;
 	}
@@ -4774,7 +4774,7 @@
             </label>
             <label class='field'>
               <span class='field-label'>传奇 · 最大挂单</span>
-              <input id='market-max-quantity-legendary' class='input' type='number' min='1' step='1' inputmode='numeric' />
+              <input id='market-max-quantity-legendary' class='input' type='number' min='0' step='1' inputmode='numeric' />
             </label>
           </div>
 
@@ -4785,7 +4785,7 @@
             </label>
             <label class='field'>
               <span class='field-label'>神话 · 最大挂单</span>
-              <input id='market-max-quantity-mythic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+              <input id='market-max-quantity-mythic' class='input' type='number' min='0' step='1' inputmode='numeric' />
             </label>
           </div>
 
@@ -4796,7 +4796,7 @@
             </label>
             <label class='field'>
               <span class='field-label'>奇异 · 最大挂单</span>
-              <input id='market-max-quantity-exotic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+              <input id='market-max-quantity-exotic' class='input' type='number' min='0' step='1' inputmode='numeric' />
             </label>
           </div>
 
@@ -4807,7 +4807,7 @@
             </label>
             <label class='field'>
               <span class='field-label'>奥术 · 最大挂单</span>
-              <input id='market-max-quantity-arcane' class='input' type='number' min='1' step='1' inputmode='numeric' />
+              <input id='market-max-quantity-arcane' class='input' type='number' min='0' step='1' inputmode='numeric' />
             </label>
           </div>
         </details>
@@ -5386,7 +5386,7 @@
 				});
 				quantityInput.addEventListener("change", (event) => {
 					const quantity = Number(event.currentTarget.value);
-					if (!Number.isFinite(quantity) || quantity <= 0) {
+					if (!Number.isFinite(quantity) || quantity < 0) {
 						renderMarketBuyOrderBasePriceSettings();
 						return;
 					}
@@ -7133,6 +7133,7 @@
 				if (!info) return;
 				let quantity = remaining;
 				const maxQuantity = marketBuyOrderMaxQuantities[info.rarity];
+				if (maxQuantity === 0) return;
 				if (maxQuantity != null && quantity > maxQuantity) quantity = maxQuantity;
 				const price = computeBuyOrderPrice(info.rarity, info.baseGold);
 				if (price == null) return;
