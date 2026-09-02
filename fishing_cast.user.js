@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.57
+// @version      4.59
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -3256,6 +3256,65 @@
 			console.warn("[自动打 Boss] 无法保存设置：", error);
 		}
 	}
+	var MARKET_BUY_ORDER_BASE_PRICE_STORAGE_KEY = "arcane-angler-market-buy-order-base-price-v1";
+	var MARKET_BUY_ORDER_TIER_STEPS = { Legendary: 10000, Mythic: 100000, Exotic: 500000, Arcane: 1000000 };
+	var MARKET_BUY_ORDER_BASE_PRICE_DEFAULTS = { Legendary: 30000, Mythic: 300000, Exotic: 1500000, Arcane: 7000000 };
+	var MARKET_BUY_ORDER_MAX_QUANTITY_DEFAULTS = { Legendary: 50, Mythic: 5, Exotic: 2, Arcane: 1 };
+	var MARKET_BUY_ORDER_MAX_QUANTITY_STORAGE_KEY = "arcane-angler-market-buy-order-max-quantity-v1";
+	function normalizeMarketBuyOrderBasePrices(value, fallback = MARKET_BUY_ORDER_BASE_PRICE_DEFAULTS) {
+		const result = {};
+		for (const key of Object.keys(MARKET_BUY_ORDER_BASE_PRICE_DEFAULTS)) {
+			const number = Number(value?.[key]);
+			result[key] = Number.isFinite(number) && number > 0 ? Math.round(number) : fallback[key];
+		}
+		return result;
+	}
+	function loadMarketBuyOrderBasePrices() {
+		try {
+			const saved = JSON.parse(localStorage.getItem(MARKET_BUY_ORDER_BASE_PRICE_STORAGE_KEY));
+			return normalizeMarketBuyOrderBasePrices(saved);
+		} catch (error) {
+			console.warn("[市场买单基准] 无法读取设置：", error);
+			return { ...MARKET_BUY_ORDER_BASE_PRICE_DEFAULTS };
+		}
+	}
+	function saveMarketBuyOrderBasePrices(settings) {
+		try {
+			localStorage.setItem(MARKET_BUY_ORDER_BASE_PRICE_STORAGE_KEY, JSON.stringify(settings));
+		} catch (error) {
+			console.warn("[市场买单基准] 无法保存设置：", error);
+		}
+	}
+	function computeMarketBuyOrderTierPrice(rarity, value) {
+		const step = MARKET_BUY_ORDER_TIER_STEPS[rarity];
+		const basePrice = marketBuyOrderBasePrices[rarity];
+		if (!step || !basePrice) return null;
+		return Math.max(basePrice, Math.ceil(value / step) * step);
+	}
+	function normalizeMarketBuyOrderMaxQuantities(value, fallback = MARKET_BUY_ORDER_MAX_QUANTITY_DEFAULTS) {
+		const result = {};
+		for (const key of Object.keys(MARKET_BUY_ORDER_MAX_QUANTITY_DEFAULTS)) {
+			const number = Number(value?.[key]);
+			result[key] = Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback[key];
+		}
+		return result;
+	}
+	function loadMarketBuyOrderMaxQuantities() {
+		try {
+			const saved = JSON.parse(localStorage.getItem(MARKET_BUY_ORDER_MAX_QUANTITY_STORAGE_KEY));
+			return normalizeMarketBuyOrderMaxQuantities(saved);
+		} catch (error) {
+			console.warn("[市场买单基准] 无法读取最大挂单数量：", error);
+			return { ...MARKET_BUY_ORDER_MAX_QUANTITY_DEFAULTS };
+		}
+	}
+	function saveMarketBuyOrderMaxQuantities(settings) {
+		try {
+			localStorage.setItem(MARKET_BUY_ORDER_MAX_QUANTITY_STORAGE_KEY, JSON.stringify(settings));
+		} catch (error) {
+			console.warn("[市场买单基准] 无法保存最大挂单数量：", error);
+		}
+	}
 	function normalizeScheduleMinutes(value, fallback) {
 		const minutes = Number(value);
 		if (!Number.isFinite(minutes) || minutes < 1) return fallback;
@@ -4650,7 +4709,7 @@
           <summary class='settings-title'>市场买卖单</summary>
 
           <div class='field-help'>
-            依次将背包中普通、史诗、传奇、神话稀有度的鱼挂单出售，普通按基础价×2向上取整到十位，史诗按基础价×1.2向上取整到百位，传奇、神话分别向上取整到万位与十万位。
+            依次将背包中史诗、传奇、神话稀有度的鱼挂单出售，史诗按基础价×1.2向上取整到百位，传奇、神话按市场买单基准阶梯定价。
           </div>
 
           <div class='field'>
@@ -4689,7 +4748,7 @@
         </details>
 
         <details class='settings-section'>
-          <summary class='settings-title'>自动升属性</summary>
+          <summary class='settings-title'>自动升级属性</summary>
 
           <div class='row'>
             <span class='label'>当前最大属性</span>
@@ -4701,6 +4760,57 @@
           </div>
         </details>
 
+        <details class='settings-section'>
+          <summary class='settings-title'>市场买单基准</summary>
+
+          <div class='field-help'>
+            基准价以“万”为单位，按“基础价格×泰坦数值”向上取整到相应档位；最大挂单数量用于限制“按专精调整买单”的买单数量。
+          </div>
+
+          <div class='number-grid'>
+            <label class='field'>
+              <span class='field-label'>传奇 · 基准价（万）</span>
+              <input id='market-base-price-legendary' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+            <label class='field'>
+              <span class='field-label'>传奇 · 最大挂单</span>
+              <input id='market-max-quantity-legendary' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+          </div>
+
+          <div class='number-grid'>
+            <label class='field'>
+              <span class='field-label'>神话 · 基准价（万）</span>
+              <input id='market-base-price-mythic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+            <label class='field'>
+              <span class='field-label'>神话 · 最大挂单</span>
+              <input id='market-max-quantity-mythic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+          </div>
+
+          <div class='number-grid'>
+            <label class='field'>
+              <span class='field-label'>奇异 · 基准价（万）</span>
+              <input id='market-base-price-exotic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+            <label class='field'>
+              <span class='field-label'>奇异 · 最大挂单</span>
+              <input id='market-max-quantity-exotic' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+          </div>
+
+          <div class='number-grid'>
+            <label class='field'>
+              <span class='field-label'>奥术 · 基准价（万）</span>
+              <input id='market-base-price-arcane' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+            <label class='field'>
+              <span class='field-label'>奥术 · 最大挂单</span>
+              <input id='market-max-quantity-arcane' class='input' type='number' min='1' step='1' inputmode='numeric' />
+            </label>
+          </div>
+        </details>
         <details class="settings-section">
           <summary class="settings-title">自动买鱼饵</summary>
 
@@ -5113,6 +5223,14 @@
 				autoSellStatus: shadowRoot.querySelector('#auto-sell-status'),
 				sellIdleFish: shadowRoot.querySelector('#sell-idle-fish'),
 				adjustMasteryBuyOrders: shadowRoot.querySelector('#adjust-mastery-buy-orders'),
+				marketBasePriceLegendary: shadowRoot.querySelector('#market-base-price-legendary'),
+				marketBasePriceMythic: shadowRoot.querySelector('#market-base-price-mythic'),
+				marketBasePriceExotic: shadowRoot.querySelector('#market-base-price-exotic'),
+				marketBasePriceArcane: shadowRoot.querySelector('#market-base-price-arcane'),
+				marketMaxQuantityLegendary: shadowRoot.querySelector('#market-max-quantity-legendary'),
+				marketMaxQuantityMythic: shadowRoot.querySelector('#market-max-quantity-mythic'),
+				marketMaxQuantityExotic: shadowRoot.querySelector('#market-max-quantity-exotic'),
+				marketMaxQuantityArcane: shadowRoot.querySelector('#market-max-quantity-arcane'),
 				loginMonitorToggle: shadowRoot.querySelector("#login-monitor-toggle"),
 				loginMonitorMachineName: shadowRoot.querySelector("#login-monitor-machine-name"),
 				loginMonitorBotKey: shadowRoot.querySelector("#login-monitor-bot-key"),
@@ -5251,6 +5369,31 @@
 				autoBaitPurchaseSettingsDirty = true;
 				flushAutoBaitPurchaseSettings();
 			});
+			for (const [priceInput, quantityInput, rarity] of [
+				[ui.marketBasePriceLegendary, ui.marketMaxQuantityLegendary, "Legendary"],
+				[ui.marketBasePriceMythic, ui.marketMaxQuantityMythic, "Mythic"],
+				[ui.marketBasePriceExotic, ui.marketMaxQuantityExotic, "Exotic"],
+				[ui.marketBasePriceArcane, ui.marketMaxQuantityArcane, "Arcane"]
+			]) {
+				priceInput.addEventListener("change", (event) => {
+					const wan = Number(event.currentTarget.value);
+					if (!Number.isFinite(wan) || wan <= 0) {
+						renderMarketBuyOrderBasePriceSettings();
+						return;
+					}
+					marketBuyOrderBasePrices[rarity] = Math.round(wan * 10000);
+					saveMarketBuyOrderBasePrices(marketBuyOrderBasePrices);
+				});
+				quantityInput.addEventListener("change", (event) => {
+					const quantity = Number(event.currentTarget.value);
+					if (!Number.isFinite(quantity) || quantity <= 0) {
+						renderMarketBuyOrderBasePriceSettings();
+						return;
+					}
+					marketBuyOrderMaxQuantities[rarity] = Math.floor(quantity);
+					saveMarketBuyOrderMaxQuantities(marketBuyOrderMaxQuantities);
+				});
+			}
 			for (const [input, field] of [
 				[ui.shortDelayMinSeconds, "shortDelayMinSeconds"],
 				[ui.shortDelayMaxSeconds, "shortDelayMaxSeconds"],
@@ -5313,6 +5456,7 @@
 			renderGameAutoFishingSettings();
 			renderPanelCollapsed();
 			renderLoginMonitorSettings();
+			renderMarketBuyOrderBasePriceSettings();
 			loginMonitorStatusEl = ui.loginMonitorStatus;
 			if (loginMonitorStatusEl) loginMonitorStatusEl.textContent = loginMonitorRunning ? "监控中" : "未监控";
 			updateClickCount();
@@ -5610,6 +5754,18 @@
 			}
 			ui.autoBaitLastPurchasedAt.textContent = autoBaitLastPurchasedAt ? new Date(autoBaitLastPurchasedAt).toLocaleTimeString() : "暂无";
 		}
+		function renderMarketBuyOrderBasePriceSettings() {
+			if (!ui?.marketBasePriceLegendary) return;
+			ui.marketBasePriceLegendary.value = String(marketBuyOrderBasePrices.Legendary / 10000);
+			ui.marketBasePriceMythic.value = String(marketBuyOrderBasePrices.Mythic / 10000);
+			ui.marketBasePriceExotic.value = String(marketBuyOrderBasePrices.Exotic / 10000);
+			ui.marketBasePriceArcane.value = String(marketBuyOrderBasePrices.Arcane / 10000);
+			if (!ui?.marketMaxQuantityLegendary) return;
+			ui.marketMaxQuantityLegendary.value = String(marketBuyOrderMaxQuantities.Legendary);
+			ui.marketMaxQuantityMythic.value = String(marketBuyOrderMaxQuantities.Mythic);
+			ui.marketMaxQuantityExotic.value = String(marketBuyOrderMaxQuantities.Exotic);
+			ui.marketMaxQuantityArcane.value = String(marketBuyOrderMaxQuantities.Arcane);
+		}
 		function renderAutoAttributeSettings() {
 			if (!ui?.autoAttributeTarget) return;
 			const { autoAttributeTarget } = getState();
@@ -5712,6 +5868,8 @@
 	var autoBiomeSettings = loadAutoBiomeSettings();
 	var autoBaitSettings = loadAutoBaitSettings();
 	var autoBossSettings = loadAutoBossSettings();
+	var marketBuyOrderBasePrices = loadMarketBuyOrderBasePrices();
+	var marketBuyOrderMaxQuantities = loadMarketBuyOrderMaxQuantities();
 	var autoAttributeTarget = null;
 	var autoAttributeTimer = null;
 	var earningsStats = loadEarningsStats();
@@ -6748,9 +6906,8 @@
 		if (rarity === 'Epic') {
 			return Math.ceil((value * 1.2) / 100) * 100;
 		}
-		if (rarity === 'Mythic') {
-			return Math.max(300000, Math.ceil(value / 100000) * 100000);
-		}
+		const tierPrice = computeMarketBuyOrderTierPrice(rarity, value);
+		if (tierPrice != null) return tierPrice;
 		return Math.max(20000, Math.ceil(value / 10000) * 10000);
 	}
 
@@ -6838,7 +6995,7 @@
 		}
 	}
 
-	const IDLE_SELL_RARITIES = ['Common', 'Epic', 'Legendary', 'Mythic'];
+	const IDLE_SELL_RARITIES = ['Epic', 'Legendary', 'Mythic'];
 
 	async function sellAllIdleFish() {
 		let requiredKeys = new Set();
@@ -6926,10 +7083,8 @@
 				const info = fishCatalog.get(key);
 				if (!info) return;
 				let quantity = remaining;
-				if (info.rarity === 'Exotic' && quantity > 2) quantity = 2;
-				if (info.rarity === 'Arcane' && quantity > 1) quantity = 1;
-				if (info.rarity === 'Mythic' && quantity > 10) quantity = 10;
-				if (info.rarity === 'Legendary' && quantity > 100) quantity = 100;
+				const maxQuantity = marketBuyOrderMaxQuantities[info.rarity];
+				if (maxQuantity != null && quantity > maxQuantity) quantity = maxQuantity;
 				const price = computeBuyOrderPrice(info.rarity, info.baseGold);
 				if (price == null) return;
 				desiredByKey.set(key, {
@@ -7037,10 +7192,8 @@
 		if (rarity === 'Fine') return baseGold + 20;
 		if (rarity === 'Rare') return baseGold + 25;
 		if (rarity === 'Epic') return baseGold + 50;
-		if (rarity === 'Legendary') return Math.max(20000, Math.ceil(baseGold / 10000) * 10000);
-		if (rarity === 'Mythic') return Math.max(300000, Math.ceil(baseGold / 100000) * 100000);
-		if (rarity === 'Exotic') return 1500000;
-		if (rarity === 'Arcane') return 7000000;
+		const tierPrice = computeMarketBuyOrderTierPrice(rarity, baseGold);
+		if (tierPrice != null) return tierPrice;
 		return null;
 	}
 
