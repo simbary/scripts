@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.53
+// @version      4.55
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -4362,7 +4362,7 @@
 		let panelCollapsed = loadPanelCollapsed();
 		let panelView = "control";
 		let earningsBiomeFilter = "all";
-		let earningsBaitFilter = "all";
+		let earningsBaitFilter = "manual";
 		let autoBaitPurchaseSaveTimer = null;
 		let autoBaitPurchaseSettingsDirty = false;
 		let draggedAutoBiomePriorityId = null;
@@ -5503,7 +5503,7 @@
 			ui.statsCastsPerHour.textContent = castsPerHour === null ? "不适用" : formatStatNumber(castsPerHour);
 			ui.statsGold.textContent = formatStatNumber(filteredStats.gold, 2);
 			ui.statsFishGold.textContent = formatStatNumber(filteredStats.fishGold, 2);
-			ui.statsTreasureAverage.textContent = formatStatNumber(treasureAverageGold, 2);
+			ui.statsTreasureAverage.textContent = formatStatNumber(treasureAverageGold);
 			ui.statsNetGold.textContent = formatStatNumber(netGold, 2);
 			ui.statsCastsPerTreasure.textContent = formatStatNumber(averageCastsPerTreasure);
 			ui.statsXpPerHour.textContent = xpPerHour === null ? "不适用" : formatStatNumber(xpPerHour);
