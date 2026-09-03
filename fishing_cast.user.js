@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.67
+// @version      4.68
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -4787,7 +4787,7 @@
           <summary class='settings-title'>市场买卖单</summary>
 
           <div class='field-help'>
-            依次将背包中史诗、传奇、神话稀有度的鱼挂单出售，史诗按基础价×1.2向上取整到百位，传奇、神话按市场买单基准阶梯定价。
+            依次将背包中史诗、传奇、神话稀有度的鱼挂单出售，价格按“市场买单基准”中的设定计算。
           </div>
 
           <div class='field'>
