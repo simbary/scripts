@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arcane Angler 自动抛竿
 // @namespace    https://github.com/simbary
-// @version      4.68
+// @version      4.71
 // @author       Codex
 // @description  自动化钓鱼操作
 // @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/fishing_cast.user.js
@@ -2045,6 +2045,11 @@
 			}
 		};
 	}
+	function pruneCastTimestamps(timestamps, now = Date.now()) {
+		const threshold = now - 3600000;
+		const list = Array.isArray(timestamps) ? timestamps : [];
+		return list.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= threshold);
+	}
 	function createEmptyEarningsCounters() {
 		return {
 			casts: 0,
@@ -2058,7 +2063,8 @@
 			relics: 0,
 			treasureChests: 0,
 			gears: 0,
-			rarityCounts: {}
+			rarityCounts: {},
+			castTimestamps: []
 		};
 	}
 	function createEmptyEarningsStats() {
@@ -2096,7 +2102,8 @@
 			relics: toNonNegativeNumber(source?.relics),
 			treasureChests: toNonNegativeNumber(source?.treasureChests),
 			gears: toNonNegativeNumber(source?.gears),
-			rarityCounts: normalizeRarityCounts(source?.rarityCounts)
+			rarityCounts: normalizeRarityCounts(source?.rarityCounts),
+			castTimestamps: pruneCastTimestamps(source?.castTimestamps)
 		};
 	}
 	function normalizeDimensionId(value) {
@@ -2204,7 +2211,8 @@
 			rarityCounts: {
 				...summary.rarityCounts,
 				[castEarnings.category]: toNonNegativeNumber(summary.rarityCounts[castEarnings.category]) + castEarnings.earnedCount
-			}
+			},
+			castTimestamps: pruneCastTimestamps([...(summary.castTimestamps ?? []), updatedAt], updatedAt)
 		};
 	}
 	function updateEarningsStats(earningsStats, result, context = null) {
@@ -2263,9 +2271,11 @@
 				relics: filteredStats.relics + breakdown.relics,
 				treasureChests: filteredStats.treasureChests + breakdown.treasureChests,
 				gears: filteredStats.gears + breakdown.gears,
-				rarityCounts: mergeRarityCounts(filteredStats.rarityCounts, breakdown.rarityCounts)
+				rarityCounts: mergeRarityCounts(filteredStats.rarityCounts, breakdown.rarityCounts),
+				castTimestamps: [...filteredStats.castTimestamps, ...(breakdown.castTimestamps ?? [])]
 			};
 		}
+		filteredStats.castTimestamps = pruneCastTimestamps(filteredStats.castTimestamps);
 		return filteredStats;
 	}
 	function listEarningsBreakdowns(earningsStats) {
@@ -2682,10 +2692,12 @@
 				console.warn("[游戏状态] 无法读取请求参数：", error);
 			}) : Promise.resolve(void 0);
 			if (method === "POST" && url?.pathname === "/api/game/cast") {
+				const isScriptAutoCast = scriptAutoCastTriggered;
+				scriptAutoCastTriggered = false;
 				const modifiedRequest = await modifyCastRequest(input, request, init);
 				const response = modifiedRequest ? await originalFetch.call(this, modifiedRequest.input, modifiedRequest.init) : await originalFetch.apply(this, arguments);
 				try {
-					collectCastResponse(response.clone(), url.pathname, onCastResult, onGameStateResponse);
+					collectCastResponse(response.clone(), url.pathname, onCastResult, onGameStateResponse, isScriptAutoCast);
 				} catch (error) {
 					console.warn("[收益统计] 无法复制抛竿响应：", error);
 				}
@@ -2838,7 +2850,7 @@
 			console.warn("[自动过验证] 无法读取 Staff Question 响应：", error);
 		}
 	}
-	async function collectCastResponse(response, pathname, onCastResult, onGameStateResponse) {
+	async function collectCastResponse(response, pathname, onCastResult, onGameStateResponse, isScriptAutoCast = false) {
 		if (!response.ok) return;
 		try {
 			const payload = await response.json();
@@ -2849,7 +2861,7 @@
 				pathname,
 				payload
 			});
-			onCastResult?.(result, { pathname });
+			onCastResult?.(result, { pathname, isScriptAutoCast });
 		} catch (error) {
 			console.warn("[收益统计] 无法读取抛竿响应：", error);
 		}
@@ -4721,7 +4733,7 @@
             <strong id="stats-casts" class="stat-card-value">0</strong>
           </div>
           <div class="stat-card">
-            <span class="stat-card-label">每小时抛竿</span>
+            <span class="stat-card-label">最近1小时抛竿</span>
             <strong id="stats-casts-per-hour" class="stat-card-value">不适用</strong>
           </div>
           <div class="stat-card">
@@ -5849,7 +5861,7 @@
 			const averageNetGold = filteredStats.casts > 0 ? netGold / filteredStats.casts : 0;
 			const statsDurationMs = filteredStats.startedAt ? Math.max(0, Date.now() - filteredStats.startedAt) : 0;
 			const netGoldPerHour = statsDurationMs >= 3600000 ? netGold / (statsDurationMs / 3600000) : null;
-			const castsPerHour = statsDurationMs >= 3600000 ? filteredStats.casts / (statsDurationMs / 3600000) : null;
+			const castsPerHour = pruneCastTimestamps(filteredStats.castTimestamps).length;
 			const statsDurationHours = statsDurationMs / 3600000;
 			const xpPerHour = statsDurationMs >= 3600000 ? filteredStats.xp / statsDurationHours : null;
 			const treasureAverageGold = filteredStats.treasureChests > 0 ? filteredStats.treasureGold / filteredStats.treasureChests : 0;
@@ -5857,7 +5869,7 @@
 			ui.statsScope.textContent = getEarningsScopeLabel(earningsStats, filter);
 			ui.statsStart.textContent = filteredStats.startedAt ? `统计起点：${new Date(filteredStats.startedAt).toLocaleString()}` : "当前范围暂无数据";
 			ui.statsCasts.textContent = formatStatNumber(filteredStats.casts);
-			ui.statsCastsPerHour.textContent = castsPerHour === null ? "不适用" : formatStatNumber(castsPerHour);
+			ui.statsCastsPerHour.textContent = formatStatNumber(castsPerHour);
 			ui.statsGold.textContent = formatStatNumber(filteredStats.gold, 2);
 			ui.statsFishGold.textContent = formatStatNumber(filteredStats.fishGold, 2);
 			ui.statsTreasureAverage.textContent = formatStatNumber(treasureAverageGold);
@@ -6101,6 +6113,7 @@
 	var earningsStats = loadEarningsStats();
 	var loopId = 0;
 	var clickCount = 0;
+	var scriptAutoCastTriggered = false;
 	var captcha = null;
 	var panel = null;
 	var schedule = null;
@@ -6154,10 +6167,10 @@
 		console.log(`[稀有通知] ${message}`);
 	}
 
-	function recordCastResult(result, { pathname } = {}) {
+	function recordCastResult(result, { pathname, isScriptAutoCast = false } = {}) {
 		fishingActivityWatchdog.markFishing();
 		notifyNoteworthyCatch(result);
-		earningsStats = updateEarningsStats(earningsStats, result, getCastEarningsContext(result, pathname === "/api/game/auto-cast" ? "auto" : "manual"));
+		earningsStats = updateEarningsStats(earningsStats, result, getCastEarningsContext(result, pathname === "/api/game/auto-cast" || isScriptAutoCast ? "auto" : "manual"));
 		saveEarningsStats(earningsStats);
 		panel?.renderEarningsStats();
 		autoBiome?.handleCastResult(result);
@@ -6518,7 +6531,9 @@
 			}
 			panel.setStatus("正在模拟点击");
 			panel.setNextDelay("—");
+			scriptAutoCastTriggered = true;
 			const clicked = await simulateClick(latestButton, currentLoopId);
+			scriptAutoCastTriggered = false;
 			if (!enabled || currentLoopId !== loopId) return;
 			if (clicked) {
 				clickCount += 1;
