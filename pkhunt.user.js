@@ -1,0 +1,797 @@
+// ==UserScript==
+// @name         PKHunt 伤药/开箱 自动脚本
+// @namespace    pkhunt-potion-auto
+// @version      1.4.1
+// @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信
+// @author       Old Lee
+// @match        https://pkhunt.online/*
+// @updateURL    https://raw.githubusercontent.com/simbary/scripts/main/pkhunt.user.js
+// @downloadURL  https://raw.githubusercontent.com/simbary/scripts/main/pkhunt.user.js
+// @supportURL   https://github.com/simbary/scripts
+// @grant        GM_xmlhttpRequest
+// @connect      qyapi.weixin.qq.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  "use strict";
+
+  // ---------- 配置 ----------
+  const CONFIG = {
+    minCount: 30,               // 低于此数量触发采购
+    buyQty: 20,                 // 每次采购数量
+    checkIntervalMs: 15000,     // 监控间隔(毫秒)
+
+    // 可选伤药类型
+    POTIONS: [
+      { id: "90020", label: "伤药",       pct: "30%"  },
+      { id: "90021", label: "好伤药",     pct: "50%"  },
+      { id: "90022", label: "高级伤药",   pct: "80%"  },
+      { id: "90023", label: "满恢复",     pct: "100%" }
+    ],
+
+    actionBuyId: "7880672fa09bba3b9560e822e073c2854321a9a702", // 采购Server Action
+    actionChestId: "78dfd1e727ee8325614bc78f8dca11a2293fb10189", // 开宝箱Server Action
+    actionGiftId: "" // 每日礼包领取Server Action (待填充)
+  };
+
+  const defaultPotion = CONFIG.POTIONS[0];
+
+  // 微信消息推送
+  const WX_KEY_STORAGE = "pkh_wx_key_v1";
+
+  // ---------- 状态 ----------
+  const STORAGE_KEY = "pkh_potion_state_v1";
+
+  // 从本地存储恢复开关状态 (默认关闭)
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const s = JSON.parse(raw);
+        return { enabled: typeof s.enabled === "boolean" ? s.enabled : false, wxKey: typeof s.wxKey === "string" ? s.wxKey : "" };
+      }
+    } catch (e) {}
+    return { enabled: false, wxKey: "" };
+  }
+  const persisted = loadState();
+
+  const state = {
+    enabled: persisted.enabled,
+    minimized: false,
+    page: "status",
+    expanded: true,
+    selected: CONFIG.POTIONS[persisted.selIndex && persisted.selIndex < CONFIG.POTIONS.length ? persisted.selIndex : 0] || defaultPotion,
+    selIndex: persisted.selIndex || 0,
+    lastCount: null,
+    buying: false,
+    lastBuyAt: 0,
+    opening: false,
+    wxKey: persisted.wxKey || "",
+    dailyGiftClaimedToday: false,
+    claimDailyGiftAt: 0,
+    lastSleepPopupHandledAt: 0
+  };
+
+  // 保存开关状态到本地存储
+  function saveState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        enabled: state.enabled,
+        selIndex: state.selIndex,
+        wxKey: state.wxKey
+      }));
+    } catch (e) {}
+  }
+
+  // ---------- 悬浮窗样式 ----------
+  const STYLE = `
+  #pkh-panel {
+    position: fixed; left: 16px; top: 16px; z-index: 2147483646;
+    font-family: "Segoe UI", Arial, sans-serif; user-select: none;
+    color: #e8ecf3; background: rgba(10, 14, 20, 0.96);
+    border: 1px solid rgba(96, 165, 250, 0.4); border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5); overflow: hidden;
+    width: 240px;
+  }
+  #pkh-panel .pkh-head {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    background: rgba(96, 165, 250, 0.12); cursor: pointer; font-weight: 700; font-size: 13px;
+  }
+  #pkh-panel .pkh-title { flex: 1; }
+  #pkh-panel .pkh-btn {
+    border: none; background: transparent; color: #9fb3c8; cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 3px 7px; border-radius: 4px;
+    min-width: 24px; text-align: center;
+  }
+  #pkh-panel .pkh-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+  #pkh-panel .pkh-tabs { display: flex; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  #pkh-panel .pkh-tab { flex: 1; padding: 6px 0; text-align: center; font-size: 12px; color: #7d8ea1; cursor: pointer; border-bottom: 2px solid transparent; }
+  #pkh-panel .pkh-tab.active { color: #fff; border-bottom-color: #317bee; }
+  #pkh-panel .pkh-page { padding: 10px; display: none; flex-direction: column; gap: 8px; }
+  #pkh-panel .pkh-page.active { display: flex; }
+  #pkh-panel .pkh-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+  #pkh-panel .pkh-val { font-family: monospace; font-weight: 700; font-size: 15px; color: #ffe68a; }
+  #pkh-panel .pkh-hint { font-size: 11px; color: #7d8ea1; line-height: 1.3; }
+  #pkh-panel .pkh-field { font-size: 12px; }
+  #pkh-panel .pkh-field label { display: block; margin-bottom: 4px; color: #9fb3c8; }
+  #pkh-panel .pkh-field select { width: 100%; padding: 5px 6px; color: #e8ecf3; background: #151d2b; border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; font-size: 12px; }
+  #pkh-panel .pkh-collapse-wrap { border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; overflow: hidden; }
+  #pkh-panel .pkh-collapse-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; background: rgba(255,255,255,0.05); cursor: pointer; font-size: 12px; font-weight: 700; }
+  #pkh-panel .pkh-collapse-head .pkh-arrow { transition: transform 0.2s; color: #7d8ea1; }
+  #pkh-panel .pkh-collapse-wrap.open .pkh-arrow { transform: rotate(90deg); }
+  #pkh-panel .pkh-collapse-body { display: none; padding: 9px; }
+  #pkh-panel .pkh-collapse-wrap.open .pkh-collapse-body { display: block; }
+  #pkh-switch { position: relative; width: 34px; height: 18px; flex-shrink: 0; }
+  #pkh-switch input { opacity: 0; width: 0; height: 0; }
+  #pkh-switch .pkh-slider { position: absolute; cursor: pointer; inset: 0; background: #3a4552; border-radius: 18px; transition: 0.2s; }
+  #pkh-switch .pkh-slider:before { content: ""; position: absolute; height: 12px; width: 12px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.2s; }
+  #pkh-panel input:checked + .pkh-slider { background: #317bee; }
+  #pkh-panel input:checked + .pkh-slider:before { transform: translateX(16px); }
+  #pkh-panel.minimized .pkh-tabs, #pkh-panel.minimized .pkh-page { display: none; }
+  #pkh-panel.off .pkh-tabs, #pkh-panel.off .pkh-page { display: none; }
+`;
+
+  // ---------- 建立悬浮窗 ----------
+  function buildPanel() {
+    const styleEl = document.createElement("style");
+    styleEl.textContent = STYLE;
+    document.head.appendChild(styleEl);
+
+    const panel = document.createElement("div");
+    panel.id = "pkh-panel";
+    panel.style.position = "fixed";
+    panel.style.left = "16px";
+    panel.style.top = "16px";
+    panel.style.zIndex = "2147483646";
+    if (state.minimized) panel.classList.add("minimized");
+    if (!state.enabled) panel.classList.add("off");
+
+    const head = document.createElement("div");
+    head.className = "pkh-head";
+    head.title = "点击最小化/展开";
+
+    const title = document.createElement("span");
+    title.className = "pkh-title";
+    title.textContent = "POKEHUNT助手";
+
+    const switchLabel = document.createElement("label");
+    switchLabel.id = "pkh-switch";
+    switchLabel.title = "功能总开关";
+    const switchInput = document.createElement("input");
+    switchInput.type = "checkbox";
+    switchInput.checked = state.enabled;
+    switchInput.addEventListener("change", (e) => {
+      state.enabled = e.target.checked;
+      panel.classList.toggle("off", !state.enabled);
+      appendLog(state.enabled ? "监控已开启" : "监控已关闭");
+      saveState();
+      if (state.enabled) checkAndBuy();
+    });
+    const slider = document.createElement("span");
+    slider.className = "pkh-slider";
+    switchLabel.appendChild(switchInput);
+    switchLabel.appendChild(slider);
+
+    head.addEventListener("click", () => {
+      state.minimized = panel.classList.toggle("minimized");
+    });
+
+    head.appendChild(title);
+    head.appendChild(switchLabel);
+
+    // 页签
+    const tabs = document.createElement("div");
+    tabs.className = "pkh-tabs";
+    const tabStatus = document.createElement("div");
+    tabStatus.className = "pkh-tab active";
+    tabStatus.textContent = "状态";
+    const tabSettings = document.createElement("div");
+    tabSettings.className = "pkh-tab";
+    tabSettings.textContent = "设置";
+    tabStatus.addEventListener("click", () => showPage("status"));
+    tabSettings.addEventListener("click", () => showPage("settings"));
+    tabs.appendChild(tabStatus);
+    tabs.appendChild(tabSettings);
+
+    // ---------- 状态页 ----------
+    const pageStatus = document.createElement("div");
+    pageStatus.className = "pkh-page active";
+    pageStatus.id = "pkh-page-status";
+
+    const stRow = document.createElement("div");
+    stRow.className = "pkh-row";
+    stRow.innerHTML = `<span>监控伤药类型</span><span class="pkh-val" style="font-size:12px;" id="pkh-stype">${state.selected.label}</span>`;
+    const cntRow = document.createElement("div");
+    cntRow.className = "pkh-row";
+    cntRow.innerHTML = `<span>当前数量</span><span class="pkh-val" id="pkh-count">--</span>`;
+    const chestRow = document.createElement("div");
+    chestRow.className = "pkh-row";
+    chestRow.innerHTML = `<span>待开宝箱</span><span class="pkh-val" style="font-size:12px;" id="pkh-chest">--</span>`;
+    const hint = document.createElement("div");
+    hint.className = "pkh-hint";
+    hint.id = "pkh-hint";
+    hint.textContent = `自动采购 ${state.selected.label}`;
+    pageStatus.appendChild(stRow);
+    pageStatus.appendChild(cntRow);
+    pageStatus.appendChild(chestRow);
+    pageStatus.appendChild(hint);
+
+    // ---------- 设置页 ----------
+    const pageSettings = document.createElement("div");
+    pageSettings.className = "pkh-page";
+    pageSettings.id = "pkh-page-settings";
+
+    const collapse = document.createElement("div");
+    collapse.className = "pkh-collapse-wrap";
+    const collapseHead = document.createElement("div");
+    collapseHead.className = "pkh-collapse-head";
+    collapseHead.innerHTML = `<span>自动购买伤药</span><span class="pkh-arrow">▸</span>`;
+    collapseHead.addEventListener("click", () => {
+      state.expanded = collapse.classList.toggle("open");
+    });
+    const collapseBody = document.createElement("div");
+    collapseBody.className = "pkh-collapse-body";
+
+    const field = document.createElement("div");
+    field.className = "pkh-field";
+    const lab = document.createElement("label");
+    lab.textContent = "购买伤药类型";
+    const select = document.createElement("select");
+    select.id = "pkh-potion-select";
+    CONFIG.POTIONS.forEach((p, i) => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label + " (治疗 " + p.pct + ")";
+      if (i === state.selIndex) opt.selected = true;
+      select.appendChild(opt);
+    });
+    select.addEventListener("change", (e) => {
+      const idx = CONFIG.POTIONS.findIndex(x => x.id === e.target.value);
+      if (idx < 0) return;
+      state.selected = CONFIG.POTIONS[idx];
+      state.selIndex = idx;
+      updateStatusUI();
+      appendLog("切换采购类型为 " + state.selected.label);
+    });
+    field.appendChild(lab);
+    field.appendChild(select);
+
+    // 采购阈值 (移动到设置分栏内)
+    const threshold = document.createElement("div");
+    threshold.className = "pkh-row";
+    threshold.style.marginTop = "8px";
+    threshold.innerHTML = `<span>采购阈值</span><span class="pkh-val" style="font-size:12px;">&lt; ${CONFIG.minCount} → 买 ${CONFIG.buyQty}</span>`;
+
+    collapseBody.appendChild(field);
+    collapseBody.appendChild(threshold);
+    collapse.appendChild(collapseHead);
+    collapse.appendChild(collapseBody);
+    pageSettings.appendChild(collapse);
+
+    // 微信消息推送设置
+    const wxCollapse = document.createElement("div");
+    wxCollapse.className = "pkh-collapse-wrap";
+    const wxCollapseHead = document.createElement("div");
+    wxCollapseHead.className = "pkh-collapse-head";
+    wxCollapseHead.innerHTML = `<span>微信消息推送设置</span><span class="pkh-arrow">▸</span>`;
+    wxCollapseHead.addEventListener("click", () => {
+      wxCollapse.classList.toggle("open");
+    });
+    const wxCollapseBody = document.createElement("div");
+    wxCollapseBody.className = "pkh-collapse-body";
+
+    const wxField = document.createElement("div");
+    wxField.className = "pkh-field";
+    const wxLab = document.createElement("label");
+    wxLab.textContent = "微信机器人 Key";
+    const wxInput = document.createElement("input");
+    wxInput.type = "password";
+    wxInput.id = "pkh-wx-key-input";
+    wxInput.placeholder = "请输入微信机器人 key";
+    wxInput.value = state.wxKey;
+    wxInput.addEventListener("change", (e) => {
+      state.wxKey = e.target.value.trim();
+      saveState();
+      appendLog("微信机器人 Key 已保存");
+    });
+    wxField.appendChild(wxLab);
+    wxField.appendChild(wxInput);
+
+    const wxHint = document.createElement("div");
+    wxHint.className = "pkh-hint";
+    wxHint.style.marginTop = "8px";
+    wxHint.textContent = "填入企业微信机器人 Webhook Key，保存后用于消息推送。";
+    wxCollapseBody.appendChild(wxField);
+    wxCollapseBody.appendChild(wxHint);
+    wxCollapse.appendChild(wxCollapseHead);
+    wxCollapse.appendChild(wxCollapseBody);
+    pageSettings.appendChild(wxCollapse);
+
+    panel.appendChild(head);
+    panel.appendChild(tabs);
+    panel.appendChild(pageStatus);
+    panel.appendChild(pageSettings);
+    document.body.appendChild(panel);
+
+    window.__pkhState = {
+      countEl: document.getElementById("pkh-count"),
+      stypeEl: document.getElementById("pkh-stype"),
+      chestEl: document.getElementById("pkh-chest"),
+      hintEl: document.getElementById("pkh-hint"),
+      tabStatus: tabStatus,
+      tabSettings: tabSettings,
+      pageStatus: pageStatus,
+      pageSettings: pageSettings
+    };
+  }
+
+  function showPage(page) {
+    state.page = page;
+    const s = window.__pkhState;
+    const isStatus = page === "status";
+    s.tabStatus.classList.toggle("active", isStatus);
+    s.tabSettings.classList.toggle("active", !isStatus);
+    s.pageStatus.classList.toggle("active", isStatus);
+    s.pageSettings.classList.toggle("active", !isStatus);
+  }
+
+  function updateStatusUI() {
+    const s = window.__pkhState;
+    if (!s) return;
+    s.stypeEl.textContent = state.selected.label;
+    s.hintEl.textContent = "自动采购 " + state.selected.label + " (治疗 " + state.selected.pct + ")";
+    const c = state.lastCount;
+    s.countEl.textContent = (c === null || c === undefined) ? "--" : String(c);
+  }
+
+  function appendLog(msg) {
+    try {
+      return; // 日志框已移除
+      const d = document.createElement("div");
+      const t = new Date();
+      const ts = t.getHours().toString().padStart(2,"0") + ":" + t.getMinutes().toString().padStart(2,"0") + ":" + t.getSeconds().toString().padStart(2,"0");
+      d.textContent = "[" + ts + "] " + msg;
+      el.appendChild(d);
+      // 只保留最近6条
+      while (el.children.length > 6) el.removeChild(el.firstChild);
+    } catch (e) {}
+  }
+
+  function updateCountUI(count) {
+    state.lastCount = count;
+    if (window.__pkhState && window.__pkhState.countEl) {
+      window.__pkhState.countEl.textContent = (count === null || count === undefined) ? "--" : String(count);
+    }
+  }
+
+  function updateChestUI(n) {
+    if (window.__pkhState && window.__pkhState.chestEl) {
+      window.__pkhState.chestEl.textContent = (n === null || n === undefined) ? "--" : String(n);
+    }
+  }
+
+  // ---------- API: fetch游戏状态 ----------
+  async function fetchState() {
+    const body = JSON.stringify([
+      { "balls": [], "potions": [ { "itemId": state.selected.id, "qty": 0 } ], "revives": [] },
+      "00000000-0000-0000-0000-000000000000",
+      false,
+      0
+    ]);
+    const res = await fetch("/en/play", {
+      method: "POST",
+      headers: {
+        "Accept": "text/x-component",
+        "Content-Type": "text/x-component",
+        "Next-Action": CONFIG.actionBuyId
+      },
+      body: body
+    });
+    return await res.text();
+  }
+
+  // 从状态文本中提取背包里某商品的数目
+  function countInBackpack(text, itemId) {
+    const re = new RegExp('"backpack"\\s*:\\s*\\{[^}]*?"' + itemId + '"\\s*:\\s*(\\d+)', "s");
+    const m = text.match(re);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  // 生成仿真实UI的随机nonce
+  function makeId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return ("xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx").replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+
+  // 从状态文本中解析宝箱数组
+  function parseChests(text) {
+    const m = text.match(/"chests"\s*:\s*(\[.*?\])/s);
+    if (!m) return [];
+    try {
+      const arr = JSON.parse(m[1]);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ---------- 采购所选伤药 ----------
+  async function buyPotions(qty) {
+    const body = JSON.stringify([
+      { "balls": [], "potions": [ { "itemId": state.selected.id, "qty": qty } ], "revives": [] },
+      makeId(),
+      true,
+      51
+    ]);
+    const res = await fetch("/en/play", {
+      method: "POST",
+      headers: {
+        "Accept": "text/x-component",
+        "Content-Type": "text/x-component",
+        "Next-Action": CONFIG.actionBuyId
+      },
+      body: body
+    });
+    const text = await res.text();
+    return { status: res.status, newCount: countInBackpack(text, state.selected.id) };
+  }
+
+  // ---------- 开一个宝箱 ----------
+  async function openChest(chestId) {
+    const body = JSON.stringify([chestId, makeId(), true, 54]);
+    const res = await fetch("/en/play", {
+      method: "POST",
+      headers: {
+        "Accept": "text/x-component",
+        "Content-Type": "text/x-component",
+        "Next-Action": CONFIG.actionChestId
+      },
+      body: body
+    });
+    const text = await res.text();
+    return { status: res.status, text: text };
+  }
+
+  // ---------- 每日礼包 API ----------
+  // 依据 fishing_cast 每日登录奖励逻辑, 每日礼包通过 server action 领取,
+  // 返回文本中可解析出奖励内容后推送微信
+  async function claimDailyGift() {
+    if (!CONFIG.actionGiftId) {
+      appendLog("每日礼包: 未配置 actionGiftId, 跳过");
+      return null;
+    }
+    const now = Date.now();
+    if (now - state.claimDailyGiftAt < 60000) return null;
+    state.claimDailyGiftAt = now;
+    // 请求体参考现有 fetch: [payload, nonce, true, actionId]
+    const body = JSON.stringify([
+      {},
+      makeId(),
+      true,
+      0
+    ]);
+    try {
+      const res = await fetch("/en/play", {
+        method: "POST",
+        headers: {
+          "Accept": "text/x-component",
+          "Content-Type": "text/x-component",
+          "Next-Action": CONFIG.actionGiftId
+        },
+        body: body
+      });
+      const text = await res.text();
+      if (res.status !== 200) {
+        appendLog("每日礼包请求失败 HTTP " + res.status);
+        return null;
+      }
+      state.dailyGiftClaimedToday = true;
+      appendLog("每日礼包领取请求成功");
+      return { status: res.status, text: text };
+    } catch (e) {
+      appendLog("每日礼包请求异常: " + e.message);
+      return null;
+    }
+  }
+
+  // 从返回文本中解析奖励内容并拼接采购/礼包信息
+  function parseRewardText(text) {
+    if (!text) return "";
+    const lines = [];
+    try {
+      // 常见响应: 奖励数组 / items / rewards
+      const m = text.match(/\"(reward|rewards|items|gift|gifts|content|contents)\"\s*:\s*(\[.*?\]|\{.*?\})/s);
+      if (m) {
+        const val = m[2];
+        lines.push(val);
+      }
+    } catch (e) {}
+    if (lines.length === 0) {
+      // 无关键词时尽量截取一段可读文本
+      const t = text.replace(/\s+/g, " ").slice(0, 300);
+      lines.push(t);
+    }
+    return lines.join(" ");
+  }
+
+  // ---------- 微信消息推送 ----------
+  // 参考 fishing_cast 脚本: 通过企业微信机器人 Webhook 推送
+  function sendWxBot(botKey, msg) {
+    if (!botKey) return;
+    const url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=" + botKey;
+    const payload = {
+      msgtype: "markdown_v2",
+      markdown_v2: { content: msg }
+    };
+    try {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: url,
+        headers: { "Content-Type": "application/json" },
+        data: JSON.stringify(payload),
+        timeout: 10000,
+        onload: (res) => {
+          try {
+            const data = JSON.parse(res.responseText);
+            if (data.errcode === 0) {
+              appendLog("微信消息推送成功");
+            } else {
+              appendLog("微信消息推送失败: " + (data.errcode || ""));
+            }
+          } catch (e) {
+            appendLog("微信响应解析失败");
+          }
+        },
+        onerror: (err) => { appendLog("微信推送异常"); },
+        ontimeout: () => { appendLog("微信推送超时"); }
+      });
+    } catch (e) {
+      // 降级使用 fetch (可能需要 CORS 支持)
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).catch(() => { appendLog("微信推送降级失败"); });
+    }
+  }
+
+  // 使用当前已保存的 Key 推送通知
+  function sendWxNotification(msg) {
+    if (!state.wxKey) return;
+    const machineName = "PKHunt";
+    const content = "【" + machineName + "】 " + msg;
+    sendWxBot(state.wxKey, content);
+  }
+
+  // ---------- 睡眠模式弹窗监控 ----------
+  // 查找包含「睡眠模式」文本的弹窗容器, 并返回其中「返回游戏」按钮
+  function findSleepPopupButton(root) {
+    root = root || document;
+
+    // 方案一: 直接找标题 #sleep-title, 向上找到弹窗容器
+    const titleEl = root.getElementById("sleep-title")
+      || root.querySelector('[id="sleep-title"]')
+      || Array.from(root.querySelectorAll("div")).find(el =>
+          (el.textContent || "").replace(/\s+/g, "") === "睡眠模式"
+        );
+    if (titleEl) {
+      // 向上找到 fixed 定位的弹窗容器 (role=alertdialog 或 inline fixed)
+      let container = titleEl.parentElement;
+      while (container && container !== document.body && container !== document.documentElement) {
+        const cs = window.getComputedStyle(container);
+        if (cs.position === "fixed" || container.getAttribute("role") === "alertdialog" || container.getAttribute("role") === "dialog") {
+          break;
+        }
+        container = container.parentElement;
+      }
+      if (container) {
+        const buttons = container.querySelectorAll("button");
+        for (const btn of buttons) {
+          const btnText = (btn.textContent || "").replace(/\s+/g, " ").trim();
+          if (btnText.includes("返回游戏")) {
+            const btnRect = btn.getBoundingClientRect();
+            if (btnRect.width > 0 && btnRect.height > 0) return btn;
+          }
+        }
+      }
+    }
+
+    // 方案二: 遍历 role=alertdialog / role=dialog 容器 (兼容无 id 的情况)
+    const containers = root.querySelectorAll(
+      "[role='alertdialog'], [role='dialog'], div.fixed.inset-0, .fixed, .modal, [data-state='open']"
+    );
+    for (const container of containers) {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) continue;
+      const text = (container.textContent || "").replace(/\s+/g, " ").trim();
+      if (text.includes("睡眠模式")) {
+        const buttons = container.querySelectorAll("button");
+        for (const btn of buttons) {
+          const btnText = (btn.textContent || "").replace(/\s+/g, " ").trim();
+          if (btnText.includes("返回游戏")) {
+            const btnRect = btn.getBoundingClientRect();
+            if (btnRect.width > 0 && btnRect.height > 0) return btn;
+          }
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // 处理睡眠模式弹窗: 点击返回游戏并推送微信
+  function handleSleepPopup() {
+    const btn = findSleepPopupButton(document);
+    if (!btn) return false;
+
+    // 去重: 最近 30 秒内已处理过则不重复处理
+    const now = Date.now();
+    if (now - state.lastSleepPopupHandledAt < 30000) return false;
+    state.lastSleepPopupHandledAt = now;
+
+    btn.click();
+    appendLog("检测到睡眠模式弹窗, 已点击返回游戏");
+    sendWxNotification("😴 检测到睡眠模式弹窗，已自动点击返回游戏");
+    return true;
+  }
+
+  // 启动睡眠弹窗 MutationObserver: 弹窗出现时立即响应
+  function startSleepPopupWatcher() {
+    if (window.__pkhSleepObserver) return;
+    if (!document.body) return;
+    const mo = new MutationObserver(() => {
+      if (!state.enabled) return;
+      handleSleepPopup();
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    window.__pkhSleepObserver = mo;
+  }
+
+  // 备用轮询: 每 2 秒检查一次, 防止 MutationObserver 漏掉
+  function startSleepPopupPolling() {
+    if (window.__pkhSleepPollTimer) return;
+    window.__pkhSleepPollTimer = setInterval(() => {
+      if (!state.enabled) return;
+      handleSleepPopup();
+    }, 2000);
+  }
+
+  // ---------- 主逻辑 ----------
+  async function checkAndBuy() {
+    if (!state.enabled || state.buying) return;
+
+    // 检测睡眠模式弹窗并处理
+    handleSleepPopup();
+
+    let text;
+    try {
+      text = await fetchState();
+    } catch (e) {
+      appendLog("读取状态失败: " + e.message);
+      return;
+    }
+
+    // 伤药采购
+    const count = countInBackpack(text, state.selected.id);
+    if (count === null) {
+      appendLog("未读到伤药数量");
+    } else {
+      updateCountUI(count);
+      if (count < CONFIG.minCount) {
+        const now = Date.now();
+        if (now - state.lastBuyAt < 15000) return;
+        state.lastBuyAt = now;
+        state.buying = true;
+        appendLog(state.selected.label + " " + count + " < " + CONFIG.minCount + ", 采购 " + CONFIG.buyQty);
+        try {
+          const r = await buyPotions(CONFIG.buyQty);
+          if (r.status === 200) {
+            if (r.newCount !== null) {
+              updateCountUI(r.newCount);
+              appendLog("采购成功, 当前 " + r.newCount);
+            } else {
+              appendLog("采购请求成功");
+            }
+          } else {
+            appendLog("采购失败 HTTP " + r.status);
+          }
+        } catch (e) {
+          appendLog("采购异常: " + e.message);
+        } finally {
+          state.buying = false;
+        }
+      }
+    }
+
+    // 自动开宝箱
+    if (!state.opening) {
+      const chests = parseChests(text);
+      updateChestUI(chests.length);
+      if (chests.length > 0) {
+        state.opening = true;
+        appendLog("发现宝箱 " + chests.length + " 个, 自动开启");
+        try {
+          const r = await openChest(chests[0].id);
+          if (r.status === 200) {
+            appendLog("开宝箱成功");
+          } else {
+            appendLog("开宝箱失败 HTTP " + r.status);
+          }
+        } catch (e) {
+          appendLog("开宝箱异常: " + e.message);
+        } finally {
+          state.opening = false;
+        }
+      }
+    }
+
+    // 每日礼包领取
+    if (!state.dailyGiftClaimedToday && CONFIG.actionGiftId) {
+      appendLog("检测到可领取的每日礼包, 尝试领取");
+      const giftRes = await claimDailyGift();
+      if (giftRes) {
+        const rewardText = parseRewardText(giftRes.text);
+        const content = "✅ 已领取每日奖励" + (rewardText ? "，奖励内容：" + rewardText : "");
+        appendLog(content);
+        sendWxNotification(content);
+      }
+    }
+  }
+
+  // ---------- 启动 ----------
+  let started = false;
+  function start() {
+    if (started) return;             // 防重复运行
+    started = true;
+    if (!document.body) {            // 等待 body 就绪
+      setTimeout(start, 100);
+      return;
+    }
+    buildPanel();
+    window.__pkhReady = true;
+    console.log("[PKHunt] 悬浮窗已创建");
+    appendLog("脚本已启动");
+    if (state.enabled) checkAndBuy();
+    if (!window.__pkhTimer) {
+      window.__pkhTimer = setInterval(checkAndBuy, CONFIG.checkIntervalMs);
+    }
+    startSleepPopupWatcher();
+    startSleepPopupPolling();
+  }
+
+  if (document.readyState === "loading" || !document.body) {
+    document.addEventListener("DOMContentLoaded", start);
+    if (!document.body) setTimeout(start, 200);
+  } else {
+    start();
+  }
+
+  // ---------- 悬浮窗守卫 ----------
+  // 游戏是SPA, 路由/React重渲染时可能清空document.body, 导致悬浮窗被移除。
+  // 持续监听: 一旦#pkh-panel丢失就重建(且不中断已有逻辑)。
+  function observePanel() {
+    if (!document.body || window.__pkhPanelObserver) return;
+    const mo = new MutationObserver(function () {
+      if (window.__pkhSuppressGuard) return;
+      if (!document.body) return;
+      if (!document.getElementById("pkh-panel")) {
+        // 面板被页面清掉 -> 直接用 buildPanel 重建 (不经过 start 的 started 防重)
+        window.__pkhSuppressGuard = true;
+        try { buildPanel(); } finally { window.__pkhSuppressGuard = false; }
+      }
+    });
+    mo.observe(document.body, { childList: true, subtree: false });
+    window.__pkhPanelObserver = mo;
+  }
+
+  function boot() {
+    if (!document.body) { setTimeout(boot, 100); return; }
+    start();
+    observePanel();
+  }
+  boot();
+})();
