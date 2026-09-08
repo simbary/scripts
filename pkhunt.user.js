@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.5.1
-// @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始
+// @version      1.6.0
+// @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始; 幸运机免费代币-转动-开胶囊-微信推送
 // @author       Old Lee
 // @match        https://pkhunt.online/*
 // @updateURL    https://raw.githubusercontent.com/simbary/scripts/main/pkhunt.user.js
@@ -74,7 +74,11 @@
     raidActive: false,       // 团队战流程执行中标记
     raidLastRunAt: 0,        // 上次尝试团队战的时间
     raidStarted: false,      // 本次循环是否已点击开始
-    raidWaitSince: 0         // 进入组队等待的时间戳
+    raidWaitSince: 0,        // 进入组队等待的时间戳
+    luckySpinActive: false,  // 幸运机流程执行中标记
+    luckySpinAt: 0,         // 上次幸运机时间
+    luckyDoneToday: false,  // 今天已完成幸运机
+    luckyDoneAt: 0          // 今天完成的时间戳
   };
 
   // 保存开关状态到本地存储
@@ -933,6 +937,139 @@
     }, 10000);
   }
 
+  // ---------- \u5e78\u8fd0\u673a\u81ea\u52a8\u6d41\u7a0b ----------
+  // \u68c0\u6d4b\u5e78\u8fd0\u673a\u662f\u5426\u53ef\u7528: \u5bfc\u822a\u6309\u94ae\u6587\u672c\u4ee5"\u5e78\u8fd0\u673a"\u5f00\u5934\u4e14\u5e26\u89d2\u6807\u6570\u5b57
+  function isLuckyAvailable() {
+    if (state.luckyDoneToday) {
+      // \u5b8c\u6210\u540e\u4eca\u5929\u4e0d\u518d\u91cd\u590d (\u5929\u5237\u65b0)
+      const now = new Date();
+      const done = new Date(state.luckyDoneAt);
+      if (now.getFullYear() === done.getFullYear() && now.getMonth() === done.getMonth() && now.getDate() === done.getDate()) {
+        return false;
+      }
+    }
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const t = (b.textContent || "").trim();
+      // \u6309\u94ae\u6587\u672c\u53ef\u80fd\u662f"\u5e78\u8fd0\u673a1" (\u5e26\u89d2\u6807)
+      if (t.indexOf("\u5e78\u8fd0\u673a") === 0 && t.length > 3 && b.getBoundingClientRect().width > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // \u70b9\u51fb\u5e78\u8fd0\u673a\u5bfc\u822a\u6309\u94ae
+  function clickLuckyNav() {
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const t = (b.textContent || "").trim();
+      if (t.indexOf("\u5e78\u8fd0\u673a") === 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+    }
+    return false;
+  }
+
+  // \u5e78\u8fd0\u673a\u4e3b\u6d41\u7a0b
+  async function runLucky() {
+    if (!state.enabled || state.luckySpinActive) return;
+    if (state.luckyDoneToday) {
+      const now = new Date();
+      const done = new Date(state.luckyDoneAt);
+      if (now.getFullYear() === done.getFullYear() && now.getMonth() === done.getMonth() && now.getDate() === done.getDate()) {
+        return;  // \u4eca\u5929\u5df2\u5b8c\u6210
+      }
+    }
+    
+    const body = document.body.innerText;
+    
+    // \u5e78\u8fd0\u673a\u9875\u9762\u5df2\u6253\u5f00\u7684\u5224\u65ad
+    const luckyPanelOpen = body.indexOf("\u5e78\u8fd0\u673a") >= 0 && (body.indexOf("\u514d\u8d39") >= 0 || body.indexOf("\u8f6c\u52a8") >= 0 || body.indexOf("\u6253\u5f00\u5b83\u4eec") >= 0);
+    
+    // \u5982\u679c\u5e78\u8fd0\u673a\u672a\u6253\u5f00, \u70b9\u51fb\u5e78\u8fd0\u673a\u5bfc\u822a
+    if (!luckyPanelOpen) {
+      if (clickLuckyNav()) {
+        setTimeout(function(){ runLucky(); }, 600);
+        return;
+      }
+      return;  // \u5e78\u8fd0\u673a\u4e0d\u53ef\u7528\u6216\u672a\u627e\u5230
+    }
+    
+    state.luckySpinActive = true;
+    
+    // \u7b2c1\u6b65: \u70b9\u51fb \u514d\u8d39 \u6bcf\u65e5\u4ee3\u5e01 (\u5982\u679c\u53ef\u7528)
+    if (body.indexOf("\u514d\u8d39\u6bcf\u65e5\u4ee3\u5e01") >= 0) {
+      clickBtnContaining("\u514d\u8d39\u6bcf\u65e5\u4ee3\u5e01");
+      appendLog("\u5e78\u8fd0\u673a: \u9886\u53d6\u514d\u8d39\u4ee3\u5e01");
+      setTimeout(function(){ runLucky(); }, 800);
+      return;
+    }
+    
+    // \u7b2c2\u6b65: \u70b9\u51fb \u8f6c\u52a8
+    if (body.indexOf("\u8f6c\u52a8") >= 0 && body.indexOf("\u4ee3\u5e01") >= 0 && body.indexOf("\u6253\u5f00\u5b83\u4eec") < 0) {
+      const btns = document.querySelectorAll("button");
+      for (const b of btns) {
+        const t = (b.textContent || "").replace(/\s+/g, " ").trim();
+        if (t.indexOf("\u8f6c\u52a8") === 0 && b.getBoundingClientRect().width > 0) { b.click(); break; }
+      }
+      appendLog("\u5e78\u8fd0\u673a: \u70b9\u51fb\u8f6c\u52a8");
+      setTimeout(function(){ runLucky(); }, 1500);
+      return;
+    }
+    
+    // \u7b2c3\u6b65: \u62bd\u5956\u5b8c\u6210\u540e\u51fa\u73b0\u80f6\u56ca \u5168\u90e8\u6253\u5f00
+    if (body.indexOf("\u5168\u90e8\u6253\u5f00") >= 0) {
+      clickBtnContaining("\u5168\u90e8\u6253\u5f00");
+      appendLog("\u5e78\u8fd0\u673a: \u6253\u5f00\u80f6\u56ca");
+      setTimeout(function(){ runLucky(); }, 800);
+      return;
+    }
+    
+    // \u7b2c4\u6b65: \u83b7\u5f97\u545c\u54c1\u9875 -> \u8bfb\u53d6\u5e76\u5fae\u4fe1\u63a8\u9001
+    if (body.indexOf("\u4fdd\u7559\u5956\u52b1") >= 0) {
+      // \u8bfb\u53d6\u5956\u54c1\u5185\u5bb9
+      const rewardArea = body.slice(body.indexOf("\u4fdd\u7559\u5956\u52b1") - 300, body.indexOf("\u4fdd\u7559\u5956\u52b1") + 50);
+      const reward = rewardArea.replace(/\s+/g, " ").trim();
+      appendLog("\u5e78\u8fd0\u673a\u83b7\u5f97: " + reward);
+      sendWxNotification("\u4e2d\u596f\uff01\u5e78\u8fd0\u673a\u83b7\u5f97:\n" + reward);
+      
+      // \u70b9\u51fb\u4fdd\u7559\u5956\u52b1
+      clickBtnContaining("\u4fdd\u7559\u5956\u52b1");
+      state.luckyDoneToday = true;
+      state.luckyDoneAt = Date.now();
+      state.luckySpinActive = false;
+      appendLog("\u5e78\u8fd0\u673a\u5b8c\u6210, \u4eca\u5929\u4e0d\u518d\u91cd\u590d");
+      
+      // \u5f85\u673a: \u70b9\u51fb\u6218\u6597\u9875\u9762
+      setTimeout(function(){ clickBtnExact("\u6218\u6597"); }, 800);
+      return;
+    }
+    
+    // \u5176\u4ed6\u60c5\u51b5: \u7b49\u5f85\u4e0b\u4e00\u8f6e
+    setTimeout(function(){ state.luckySpinActive = false; }, 3000);
+  }
+
+  // \u70b9\u51fb\u6587\u672c\u7cbe\u786e\u5339\u914d\u7684\u6309\u94ae
+  function clickBtnExact(text) {
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const t = (b.textContent || "").trim();
+      if (t === text && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+    }
+    return false;
+  }
+
+  // \u542f\u52a8\u5e78\u8fd0\u673a\u76d1\u63a7
+  function startLuckyMonitor() {
+    if (window.__pkhLuckyTimer) return;
+    window.__pkhLuckyTimer = setInterval(function() {
+      if (!state.enabled) return;
+      if (state.luckySpinActive) return;
+      if (isLuckyAvailable()) {
+        runLucky();
+      }
+    }, 15000);
+  }
+
   // ---------- 主逻辑 ----------
   async function checkAndBuy() {
     if (!state.enabled || state.buying) return;
@@ -1036,6 +1173,7 @@
     startSleepPopupWatcher();
     startSleepPopupPolling();
     startRaidMonitor();
+    startLuckyMonitor();
   }
 
   if (document.readyState === "loading" || !document.body) {
