@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.4.1
-// @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信
+// @version      1.5.0
+// @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始
 // @author       Old Lee
 // @match        https://pkhunt.online/*
 // @updateURL    https://raw.githubusercontent.com/simbary/scripts/main/pkhunt.user.js
@@ -70,7 +70,11 @@
     wxKey: persisted.wxKey || "",
     dailyGiftClaimedToday: false,
     claimDailyGiftAt: 0,
-    lastSleepPopupHandledAt: 0
+    lastSleepPopupHandledAt: 0,
+    raidActive: false,       // 团队战流程执行中标记
+    raidLastRunAt: 0,        // 上次尝试团队战的时间
+    raidStarted: false,      // 本次循环是否已点击开始
+    raidWaitSince: 0         // 进入组队等待的时间戳
   };
 
   // 保存开关状态到本地存储
@@ -660,12 +664,214 @@
     }, 2000);
   }
 
+  // ---------- 团队战自动执行 ----------
+  // 打开团队战面板 (点击导航栏"团队战")
+  // 判断团队战当前是否可触发
+  function getRaidStatus() {
+    if (raidResultOpen()) return true;
+    if (isInRaidTeam()) return true;
+    return raidCreateAvailable();
+  }
+
+  function clickRaidNav() {
+    const navBtns = document.querySelectorAll("button");
+    for (const b of navBtns) {
+      const t = (b.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.indexOf("团队战") === 0 && b.getBoundingClientRect().width > 0) {
+        b.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 从宝可梦网格中选等级最高的
+  function clickHighestLevelMon() {
+    const grid = document.querySelector("[data-testid='raid-mon-grid']");
+    if (!grid) return false;
+    const items = grid.querySelectorAll("button");
+    let best = null, bestLv = -1;
+    items.forEach(function (b) {
+      const t = b.textContent || "";
+      const m = t.match(/Lv\s*(\d+)/i);
+      if (m) {
+        const lv = parseInt(m[1], 10);
+        if (lv > bestLv) { bestLv = lv; best = b; }
+      }
+    });
+    if (best) { best.click(); return true; }
+    return false;
+  }
+
+  // 点击按钮 (文本包含匹配)
+  function clickBtnContaining(text) {
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const t = (b.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.indexOf(text) >= 0 && b.getBoundingClientRect().width > 0) {
+        b.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 勾选 "Start on its own" 复选框
+  function checkStartOnOwn() {
+    const labels = document.querySelectorAll("label");
+    for (const lb of labels) {
+      const t = (lb.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.indexOf("Start on its own") >= 0) {
+        const cb = lb.querySelector("input[type=checkbox]");
+        if (cb && !cb.checked) { cb.click(); }
+        return true;
+      }
+    }
+    // 兜底: 全局找复选框
+    const checks = document.querySelectorAll("input[type=checkbox]");
+    for (const cb of checks) {
+      const label = cb.closest("label");
+      const t = label ? (label.textContent || "").replace(/\s+/g, " ").trim() : "";
+      if (t.indexOf("Start on its own") >= 0 && !cb.checked) { cb.click(); return true; }
+    }
+    return false;
+  }
+
+  // 判断当前是否已在队伍中 (团队战面板内)
+  function isInRaidTeam() {
+    const t = document.body.innerText;
+    return t.indexOf("阵型") >= 0 || t.indexOf("等待为") >= 0 || t.indexOf("短员") >= 0;
+  }
+
+  // 判断团队战面板已打开且有"创建我的队伍"
+  function raidCreateAvailable() {
+    const t = document.body.innerText;
+    return t.indexOf("创建我的队伍") >= 0;
+  }
+
+  // 判断结算面板(战斗结束) - 需要点击关闭
+  function raidResultOpen() {
+    const t = document.body.innerText;
+    return t.indexOf("观看回放") >= 0 && t.indexOf("领取奖励") >= 0;
+  }
+
+  // 关闭结算面板
+  function closeRaidResult() {
+    if (!raidResultOpen()) return false;
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const cls = (b.className || "").toString();
+      const t = (b.textContent || "").trim();
+      if (cls.indexOf("ui-panel-close") >= 0 && t === "\u2715") { b.click(); return true; }
+    }
+    // 兆底关闭: 找到面板关闭按钮点击
+    const allBtns = document.querySelectorAll("button");
+    for (const b of allBtns) {
+      const cls = (b.className || "").toString();
+      if (cls.indexOf("ui-panel-close") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+    }
+    return false;
+  }
+
+  // 检查是否出现"开始"按钮 (表明可强制开始)
+  function raidCanStart() {
+    const t = document.body.innerText;
+    return t.indexOf("开始 (short-handed)") >= 0 || t.indexOf("开始") >= 0;
+  }
+
+  // 团队战主流程
+  async function runRaid() {
+    // 已有面板在场 (可能是别的玩家弄的或已打开) - 需要场景判断
+    const body = document.body.innerText;
+    
+    // 1. 结算面板 -> 关闭
+    if (raidResultOpen()) { closeRaidResult(); return; }
+    
+    // 2. 已加入队伍 -> 等待
+    if (isInRaidTeam()) {
+      appendLog("已在团队队伍中, 等待开始");
+      // 如果已等待超过5分钟 (300s), 点击开始
+      const now = Date.now();
+      if (!state.raidWaitSince) state.raidWaitSince = now;
+      if (now - state.raidWaitSince >= 300000) {
+        appendLog("等待超时5分钟, 点击开始");
+        clickBtnContaining("开始");
+        state.raidWaitSince = 0;
+        state.raidActive = false;
+      }
+      return;
+    }
+
+    // 3. 不在队伍, 检查是否可创建
+    const raidTask = window.__pkhRaidLock;
+    if (raidTask) return;  // 已有团队战流程在跑
+    
+    // 尝试打开团队战面板
+    if (!raidCreateAvailable()) {
+      if (!clickRaidNav()) return;
+      setTimeout(function(){ runRaid(); }, 800);
+      return;
+    }
+    
+    state.raidActive = true;
+    state.raidLastRunAt = Date.now();
+    appendLog("团队战可用, 开始自动创建");
+    
+    if (!clickBtnContaining("创建我的队伍")) { appendLog("创建按钮未找到"); return; }
+    appendLog("创建队伍");
+    
+    setTimeout(function(){ 
+      // 选最高级宝可梦
+      if (!clickHighestLevelMon()) { appendLog("未找到宝可梦"); return; }
+      appendLog("选择最高等级宝可梦");
+      
+      setTimeout(function(){
+        // 发送这只宝可梦
+        if (!clickBtnContaining("发送这只宝可梦")) { appendLog("未找到发送按钮"); return; }
+        appendLog("发送宝可梦");
+        
+        setTimeout(function(){
+          // 点击配置
+          if (!clickBtnContaining("配置")) { 
+            // 若已直接进入队伍, 跳到等待
+            if (!isInRaidTeam()) return;
+          }
+          appendLog("打开配置");
+          
+          setTimeout(function(){
+            // 勾选 Start on its own
+            checkStartOnOwn();
+            appendLog("勾选自动开始");
+            
+            // 点击节省规则 (确认)
+            clickBtnContaining("节省规则");
+            appendLog("保存配置");
+            
+            // 记录等待开始时间
+            state.raidWaitSince = Date.now();
+            state.raidStarted = false;
+          }, 500);
+        }, 500);
+      }, 500);
+    }, 500);
+  }
+
+  // 启动团队战监控: 周期性检查
+  function startRaidMonitor() {
+    if (window.__pkhRaidTimer) return;
+    window.__pkhRaidTimer = setInterval(function() {
+      if (!state.enabled) return;
+      if (!state.raidActive && getRaidStatus()) runRaid();
+    }, 10000);
+  }
+
   // ---------- 主逻辑 ----------
   async function checkAndBuy() {
     if (!state.enabled || state.buying) return;
 
     // 检测睡眠模式弹窗并处理
     handleSleepPopup();
+
 
     let text;
     try {
@@ -761,6 +967,7 @@
     }
     startSleepPopupWatcher();
     startSleepPopupPolling();
+    startRaidMonitor();
   }
 
   if (document.readyState === "loading" || !document.body) {
