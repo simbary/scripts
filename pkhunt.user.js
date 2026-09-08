@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.5.0
+// @version      1.5.1
 // @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始
 // @author       Old Lee
 // @match        https://pkhunt.online/*
@@ -779,10 +779,78 @@
     return t.indexOf("开始 (short-handed)") >= 0 || t.indexOf("开始") >= 0;
   }
 
+  // 检测"首领已被击败"战斗结束弹窗, 点击 关闭/跳过
+  function closeRaidBattleResult() {
+    const t = document.body.innerText;
+    if (t.indexOf("首领已被击败") < 0) return false;
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const bt = (b.textContent || "").trim();
+      const cls = (b.className || "").toString();
+      if (bt === "关闭" && cls.indexOf("ui-btn") >= 0 && b.getBoundingClientRect().width > 0) {
+        b.click(); return true;
+      }
+    }
+    for (const b of btns) {
+      const bt = (b.textContent || "").trim();
+      if (bt.indexOf("跳过") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+    }
+    return false;
+  }
+
+  // 检测"观看回放/领取奖励"胜利结算面板
+  function closeRaidVictoryPanel() {
+    const t = document.body.innerText;
+    if (t.indexOf("观看回放") < 0 || t.indexOf("领取奖励") < 0) return false;
+    const btns = document.querySelectorAll("button");
+    for (const b of btns) {
+      const bt = (b.textContent || "").trim();
+      if (bt === "领取奖励" && b.getBoundingClientRect().width > 0) { b.click(); return "claimed"; }
+    }
+    for (const b of btns) {
+      const cls = (b.className || "").toString();
+      if (cls.indexOf("ui-panel-close") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return "closed"; }
+    }
+    return false;
+  }
+
+  // 读取战利品文本 (从胜利结算面板)
+  function extractRaidLoot() {
+    const t = document.body.innerText;
+    const idx = t.indexOf("观看回放");
+    if (idx >= 0) {
+      const chunk = t.slice(idx, idx + 800);
+      return chunk.replace(/\s+/g, " ").slice(0, 400);
+    }
+    // 关键词检索
+    const keys = ["战利品", "金币", "宝箱", "碎片"];
+    for (const k of keys) {
+      const ki = t.indexOf(k);
+      if (ki >= 0) return t.slice(ki, ki + 200).replace(/\s+/g, " ").slice(0, 300);
+    }
+    return "";
+  }
+
   // 团队战主流程
   async function runRaid() {
     // 已有面板在场 (可能是别的玩家弄的或已打开) - 需要场景判断
     const body = document.body.innerText;
+    
+    // 0. 战斗结束弹窗 -> 点击 关闭/跳过
+    if (closeRaidBattleResult()) {
+      appendLog("关闭战斗结果弹窗");
+      return;
+    }
+    
+    // 0b. 胜利结算面板 -> 领取奖励并关闭
+    if (closeRaidVictoryPanel()) {
+      const loot = extractRaidLoot();
+      if (loot) {
+        appendLog("胜利结算获得: " + loot);
+        sendWxNotification("团队战胜利, 获得: " + loot);
+      }
+      return;
+    }
     
     // 1. 结算面板 -> 关闭
     if (raidResultOpen()) { closeRaidResult(); return; }
