@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.7.3
+// @version      1.7.4
 // @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始; 幸运机免费代币-转动-开胶囊-微信推送
 // @author       Old Lee
 // @match        https://pkhunt.online/*
@@ -1233,6 +1233,15 @@
     }
   }
 
+
+  function startInvMonitor() {
+    if (window.__pkhInvTimer) return;
+    window.__pkhInvTimer = setInterval(function() {
+      if (!state.enabled) return;
+      runInvOrg();
+      updateInvTimeUI();
+    }, 20000);
+  }
 
   // ---------- 主逻辑 ----------
   async function checkAndBuy() {
