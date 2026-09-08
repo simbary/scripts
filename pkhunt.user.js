@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.7.1
+// @version      1.7.2
 // @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始; 幸运机免费代币-转动-开胶囊-微信推送
 // @author       Old Lee
 // @match        https://pkhunt.online/*
@@ -1127,16 +1127,35 @@
     return false;
   }
 
-  function clickStorageItemByType(type) {
-    const slots = document.querySelectorAll(".inv-slot");
-    for (const s of slots) {
-      const rect = s.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      const aria = s.getAttribute("aria-label") || "";
-      if (type === "potion" && aria.indexOf("伤药") >= 0) { s.click(); return true; }
-      if (type === "ball" && aria.indexOf("球") >= 0 && !/宝石|碎片|糖果/.test(aria)) { s.click(); return true; }
+  // 此函数不再通过名称预判, 而是从弹窗读取"物品类型"(第二行 类型·稀有度)
+  // 因此改为: 依次点开每个仓库物品, 读类型, 决定移动/留守。
+  // slave函数: 返回当前打开的弹窗的物品类型 (弹窗第二行 形如"伤药 · 稀有")
+  function getOpenItemType() {
+    const t = document.body.innerText;
+    const lines = t.split(String.fromCharCode(10)).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
+    // 弹窗序列: [名称, ✕, 名称, 类型, ·稀有度, ...]
+    // 找到 名称 在位置 i 和 i+2 重复的地方
+    for (let i = 0; i + 3 < lines.length; i++) {
+      if (lines[i] === lines[i + 2] && lines[i + 1] === "✕") {
+        // 类型行 = lines[i+3]
+        const typeLine = lines[i + 3] || "";
+        if (typeLine && typeLine.length < 40) return typeLine.trim();
+      }
     }
-    return false;
+    // 仍无: 直接用闭合方式查找"· 稀有度"前的行
+    for (let i = 0; i < lines.length - 1; i++) {
+      if (/·|•/.test(lines[i]) && lines[i].length < 30) {
+        const prev = lines[i - 1] || "";
+        if (prev && prev.length < 30 && prev !== "✕") return prev;
+      }
+    }
+    return "";
+  }
+
+  // 判断某类型是否应放背包 (精灵球 或 伤药)
+  function isKeepInBag(typeName) {
+    if (!typeName) return false;
+    return typeName.indexOf("球") >= 0 || typeName.indexOf("伤药") >= 0 || typeName.indexOf("药") >= 0;
   }
 
   function moveToBag() {
@@ -1157,7 +1176,7 @@
     return false;
   }
 
-  function runInvOrg() {
+    function runInvOrg() {
     if (!state.enabled) return;
     const now = Date.now();
     if (!state.invNextRunAt) scheduleNextInvRun();
@@ -1167,12 +1186,16 @@
     state.invRunning = true;
     try {
       if (isItemDialogOpen()) {
-        if (moveToBag()) {
-          setTimeout(function(){ closeVisiblePanel(); setTimeout(runInvOrg, 400); }, 300);
-        } else {
-          closeVisiblePanel();
-          setTimeout(runInvOrg, 400);
+        const typeName = getOpenItemType();
+        if (isKeepInBag(typeName)) {
+          if (moveToBag()) {
+            appendLog("移动回背包: " + (typeName || "?"));
+            setTimeout(function(){ closeVisiblePanel(); setTimeout(runInvOrg, 400); }, 300);
+            return;
+          }
         }
+        closeVisiblePanel();
+        setTimeout(runInvOrg, 400);
         return;
       }
 
@@ -1191,12 +1214,9 @@
         return;
       }
 
-      if (clickStorageItemByType("potion")) {
-        setTimeout(runInvOrg, 500);
-        return;
-      }
-
-      if (clickStorageItemByType("ball")) {
+      const slot = document.querySelector(".inv-slot");
+      if (slot) {
+        slot.click();
         setTimeout(runInvOrg, 500);
         return;
       }
@@ -1210,14 +1230,6 @@
     }
   }
 
-  function startInvMonitor() {
-    if (window.__pkhInvTimer) return;
-    window.__pkhInvTimer = setInterval(function() {
-      if (!state.enabled) return;
-      runInvOrg();
-      updateInvTimeUI();
-    }, 20000);
-  }
 
   // ---------- 主逻辑 ----------
   async function checkAndBuy() {
