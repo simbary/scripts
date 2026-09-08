@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PKHunt 伤药/开箱 自动脚本
 // @namespace    pkhunt-potion-auto
-// @version      1.7.0
+// @version      1.7.1
 // @description  监控所选等级伤药数量, 低于阈值自动采购; 自动通过API开启宝箱; 悬浮窗分状态/设置两页; 睡眠模式弹窗自动返回游戏并推送微信; 团队战自动创建-选最高级-配置自动开始; 幸运机免费代币-转动-开胶囊-微信推送
 // @author       Old Lee
 // @match        https://pkhunt.online/*
@@ -80,7 +80,8 @@
     luckyDoneToday: false,  // 今天已完成幸运机
     luckyDoneAt: 0,         // 今天完成的时间戳
     invNextRunAt: 0,        // 下次背包整理时间戳
-    invRunning: false       // 背包整理流程执行中
+    invRunning: false,      // 背包整理流程执行中
+    invStep: 0              // 整理步骤标记
   };
 
   // 保存开关状态到本地存储
@@ -1087,65 +1088,67 @@
   }
 
   // ---------- 背包物品整理 ----------
-  // 初始化下次整理时间: 整点 + 随机 0-10 分钟
   function scheduleNextInvRun() {
-    const now = Date.now();
-    // 下一个整点
     const d = new Date();
     d.setHours(d.getHours() + 1, 0, 0, 0);
-    // 加随机 0-10 分钟
     const extra = Math.floor(Math.random() * 11) * 60000;
     state.invNextRunAt = d.getTime() + extra;
+    state.invRunning = false;
     updateInvTimeUI();
   }
 
-  // 点击背包导航
-  function clickBagNav() {
+  function clickNavByPrefix(prefix) {
     const btns = document.querySelectorAll("button");
     for (const b of btns) {
       const t = (b.textContent || "").trim();
-      if (t.indexOf("\u80cc\u5305") === 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+      if (t.indexOf(prefix) === 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
     }
     return false;
   }
 
-  // 点击"全部移至仓库"
+  function isBagOpen() {
+    return document.body.innerText.indexOf("全部移至仓库") >= 0;
+  }
+
+  function isItemDialogOpen() {
+    return document.body.innerText.indexOf("移动到背包") >= 0;
+  }
+
+  function isBagEmpty() {
+    return document.body.innerText.indexOf("背包空") >= 0;
+  }
+
   function clickMoveAllToStorage() {
     const btns = document.querySelectorAll("button");
     for (const b of btns) {
       const t = (b.textContent || "").replace(/\s+/g, " ").trim();
-      if (t.indexOf("\u5168\u90e8\u79fb\u81f3\u4ed3\u5e93") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+      if (t.indexOf("全部移至仓库") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
     }
     return false;
   }
 
-  // 仓库中找"药水/伤药"或"精灵球"类物品并点击 (按 aria-label)
-  function clickStorageItem(keyword) {
+  function clickStorageItemByType(type) {
     const slots = document.querySelectorAll(".inv-slot");
     for (const s of slots) {
-      const aria = s.getAttribute("aria-label") || "";
       const rect = s.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
-      // 伤药类: 含"伤药" (包好/好伤药/高级伤药等) 或"药水"
-      // 精灵球类: 含"球" (精灵球/超级球/高级球等)
-      if (keyword === "\u4f24\u836f" && aria.indexOf("\u4f24\u836f") >= 0) { s.click(); return true; }
-      if (keyword === "\u7403" && aria.indexOf("\u7403") >= 0 && aria.indexOf("\u7403") < aria.length) { s.click(); return true; }
+      const aria = s.getAttribute("aria-label") || "";
+      if (type === "potion" && aria.indexOf("伤药") >= 0) { s.click(); return true; }
+      if (type === "ball" && aria.indexOf("球") >= 0 && !/宝石|碎片|糖果/.test(aria)) { s.click(); return true; }
     }
     return false;
   }
 
-  // 点击"移动到背包"并关闭弹窗
-  function moveToBagAndClose() {
-    // 找移动到背包按钮
+  function moveToBag() {
     const btns = document.querySelectorAll("button");
     for (const b of btns) {
       const t = (b.textContent || "").trim();
-      if (t.indexOf("\u79fb\u52a8\u5230\u80cc\u5305") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
+      if (t.indexOf("移动到背包") >= 0 && b.getBoundingClientRect().width > 0) { b.click(); return true; }
     }
     return false;
   }
 
-  function closeTopPanel() {
+  function closeVisiblePanel() {
     const btns = document.querySelectorAll("button.ui-panel-close");
     for (const b of btns) {
       const r = b.getBoundingClientRect();
@@ -1154,103 +1157,66 @@
     return false;
   }
 
-  // 判断背包面板是否打开
-  function isBagOpen() {
-    const t = document.body.innerText;
-    return t.indexOf("\u5168\u90e8\u79fb\u81f3\u4ed3\u5e93") >= 0;
-  }
-
-  // 判断物品详情弹窗是否打开 (出现"移动到背包")
-  function isItemDialogOpen() {
-    const t = document.body.innerText;
-    return t.indexOf("\u79fb\u52a8\u5230\u80cc\u5305") >= 0;
-  }
-
-  // 背包整理主流程
-  async function runInvOrg() {
-    if (!state.enabled || state.invRunning) return;
-    
-    // 判断是否到时间
+  function runInvOrg() {
+    if (!state.enabled) return;
     const now = Date.now();
     if (!state.invNextRunAt) scheduleNextInvRun();
     if (now < state.invNextRunAt) return;
-    
+    if (state.invRunning) return;
+
     state.invRunning = true;
-    const body = document.body.innerText;
-    
     try {
-      // 1. 打开背包面板
-      if (!isBagOpen()) {
-        if (!clickBagNav()) { return; }
-        setTimeout(function(){ runInvOrg(); }, 600);
-        return;
-      }
-      
-      // 2. 如果有物品详情弹窗打开, 先处理或关闭
       if (isItemDialogOpen()) {
-        // 先尝试移动到背包 (这个弹窗是点击仓库物品后弹出的)
-        if (moveToBagAndClose()) {
-          setTimeout(function(){ closeTopPanel(); setTimeout(function(){ runInvOrg(); }, 500); }, 400);
-          return;
+        if (moveToBag()) {
+          setTimeout(function(){ closeVisiblePanel(); setTimeout(runInvOrg, 400); }, 300);
+        } else {
+          closeVisiblePanel();
+          setTimeout(runInvOrg, 400);
         }
-      }
-      
-      // 3. 背包有内容 -> 全部移至仓库
-      if (body.indexOf("\u80cc\u5305\u7a7a") < 0) {
-        const moved = clickMoveAllToStorage();
-        if (moved) {
-          setTimeout(function(){ runInvOrg(); }, 600);
-          return;
-        }
-      }
-      
-      // 4. 仓库中找"伤药"并移动回背包
-      if (clickStorageItem("\u4f24\u836f")) {
-        setTimeout(function(){
-          // 弹窗出现, 移动
-          if (moveToBagAndClose()) {
-            setTimeout(function(){ closeTopPanel(); setTimeout(function(){ runInvOrg(); }, 500); }, 400);
-            return;
-          }
-        }, 400);
         return;
       }
-      
-      // 5. 仓库中找"精灵球"并移动回背包
-      if (clickStorageItem("\u7403")) {
-        setTimeout(function(){
-          if (moveToBagAndClose()) {
-            setTimeout(function(){ closeTopPanel(); setTimeout(function(){ runInvOrg(); }, 500); }, 400);
-            return;
-          }
-        }, 400);
+
+      if (!isBagOpen()) {
+        if (!clickNavByPrefix("背包")) { scheduleNextInvRun(); return; }
+        setTimeout(runInvOrg, 500);
         return;
       }
-      
-      // 6. 完成: 点世界按钮返回, 记录下次时间
-      appendLog("\u80cc\u5305\u6574\u7406\u5b8c\u6210");
-      // 回到世界
-      const worldBtns = document.querySelectorAll("button");
-      for (const b of worldBtns) {
-        const t = (b.textContent || "").trim();
-        if (t === "\u4e16\u754c" && b.getBoundingClientRect().width > 0) { b.click(); break; }
+
+      if (!isBagEmpty()) {
+        if (clickMoveAllToStorage()) {
+          setTimeout(runInvOrg, 600);
+        } else {
+          setTimeout(runInvOrg, 300);
+        }
+        return;
       }
+
+      if (clickStorageItemByType("potion")) {
+        setTimeout(runInvOrg, 500);
+        return;
+      }
+
+      if (clickStorageItemByType("ball")) {
+        setTimeout(runInvOrg, 500);
+        return;
+      }
+
+      appendLog("背包整理完成");
+      clickNavByPrefix("世界");
       scheduleNextInvRun();
-      state.invRunning = false;
     } catch (e) {
-      appendLog("\u80cc\u5305\u6574\u7406\u5f02\u5e38: " + e.message);
-      state.invRunning = false;
+      appendLog("背包整理异常: " + e.message);
+      scheduleNextInvRun();
     }
   }
 
-  // 启动背包整理监控
   function startInvMonitor() {
     if (window.__pkhInvTimer) return;
     window.__pkhInvTimer = setInterval(function() {
       if (!state.enabled) return;
       runInvOrg();
       updateInvTimeUI();
-    }, 30000);
+    }, 20000);
   }
 
   // ---------- 主逻辑 ----------
