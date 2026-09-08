@@ -1155,7 +1155,10 @@
   // 判断某类型是否应放背包 (精灵球 或 伤药)
   function isKeepInBag(typeName) {
     if (!typeName) return false;
-    return typeName.indexOf("球") >= 0 || typeName.indexOf("伤药") >= 0 || typeName.indexOf("药") >= 0;
+    const n = typeName.trim();
+    // 精灵球 或 伤药 类型才留背包
+    return n === "精灵球" || n === "伤药" ||
+           n.indexOf("精灵球") >= 0 || n.indexOf("伤药") >= 0;
   }
 
   function moveToBag() {
